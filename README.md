@@ -98,13 +98,36 @@ Visit: [Trading Journal Dashboard](https://trading-journal.khaliddev.com)
 4. Review the preview and click **Import**
 
 #### Supported Brokers For CSV Import
-- Exness.com
+
+Select the broker format in the **CSV Import** tab before processing your file.
+
+##### Exness.com
 
 **Supported CSV Format:**
 ```csv
 symbol,type,opening_time_utc,closing_time_utc,lots,opening_price,closing_price,stop_loss,take_profit,profit_usd,commission_usd,close_reason,ticket
 BTCUSD,buy,2024-01-15 10:30:00,2024-01-15 14:45:00,0.1,50000,51000,49500,52000,100,-5,tp,12345
 ```
+
+##### Fidelity (Stocks/ETFs)
+
+**How to export from Fidelity:**
+1. Log in to fidelity.com and open **Accounts & Trade** → **Activity & Orders**.
+2. Click **History**, set your date range, and click **Download** (CSV).
+   - Each download is limited to a rolling 90 days, so use the shortest range you need.
+3. In the journal's **CSV Import** tab, select **Fidelity** as the broker, upload the file, and process.
+
+**What happens on import:**
+- One row per order is paired per symbol (FIFO) into round-trip trades (buy → sell).
+- Dividends, transfers, interest and other non-trade rows are skipped.
+- Open positions and sells without a matching buy are reported in the import notes.
+- Option rows are detected and skipped (options support is not implemented yet).
+
+**Risk metrics:** Fidelity's export does not include stop losses. Set your typical
+**stop distance % from entry** (or default ideal risk) during import so R-multiple
+and risk % are calculated. You can still edit each trade afterwards.
+
+A sample file is included at [`sample-fidelity-trades.csv`](sample-fidelity-trades.csv).
 
 ### Using Advanced Analytics
 

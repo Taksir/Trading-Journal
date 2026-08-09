@@ -9,9 +9,12 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { X, Upload, FileText, Download, AlertTriangle } from "lucide-react"
+import { X, Upload, FileText, Download, AlertTriangle, Info } from "lucide-react"
 import type { Trade, Settings, BrokerTrade } from "@/types/trade"
 import { getTradingSession, getDayOfWeek, DEFAULT_TRADING_SESSIONS } from "@/utils/trading-sessions"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { parseFidelityCsv } from "@/lib/fidelity-parser"
+import { convertFidelityRoundTripToTrade } from "@/lib/fidelity-to-trade"
 
 interface ImportDialogProps {
   onImport: (trades: Omit<Trade, "id">[], duplicates?: string[]) => void
@@ -27,6 +30,9 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
   const [previewTrades, setPreviewTrades] = useState<Omit<Trade, "id">[]>([])
   const [duplicates, setDuplicates] = useState<string[]>([])
   const [defaultIdealRisk, setDefaultIdealRisk] = useState(settings.defaultIdealRisk || 100)
+  const [broker, setBroker] = useState<"exness" | "fidelity">("exness")
+  const [stopDistancePercent, setStopDistancePercent] = useState("")
+  const [fidelityWarnings, setFidelityWarnings] = useState<string[]>([])
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>, type: "csv" | "json") => {
     const file = event.target.files?.[0]
@@ -249,6 +255,98 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
     return { trades: uniqueTrades, duplicates: duplicateTickets }
   }
 
+  const processExnessCSV = () => {
+    const brokerTrades = parseBrokerCSV(csvData)
+    const convertedTrades = brokerTrades.map((trade, index) => {
+      try {
+        return convertBrokerTradeToTrade(trade)
+      } catch (error) {
+        console.error(`Error converting trade ${index + 1}:`, error)
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        throw new Error(`Error converting trade ${index + 1}: ${errorMessage}`)
+      }
+    })
+
+    const { trades: uniqueTrades, duplicates: foundDuplicates } = checkForDuplicates(convertedTrades)
+
+    setFidelityWarnings([])
+    setPreviewTrades(uniqueTrades)
+    setDuplicates(foundDuplicates)
+
+    console.log("=== IMPORT SUMMARY (Exness) ===")
+    console.log("Total CSV rows processed:", brokerTrades.length)
+    console.log("Successfully converted trades:", convertedTrades.length)
+    console.log("Unique trades after duplicate check:", uniqueTrades.length)
+    console.log("Duplicates found:", foundDuplicates.length)
+    console.log("======================")
+
+    if (foundDuplicates.length > 0) {
+      alert(`Found ${foundDuplicates.length} duplicate trades that will be skipped: ${foundDuplicates.join(", ")}`)
+    }
+  }
+
+  const processFidelityCSV = () => {
+    const result = parseFidelityCsv(csvData)
+    const stopPct = stopDistancePercent ? Number(stopDistancePercent) : undefined
+
+    const warnings: string[] = []
+    if (result.skippedRows > 0) {
+      warnings.push(
+        `${result.skippedRows} non-trade row(s) (dividends, transfers, interest, etc.) were skipped.`
+      )
+    }
+    if (result.optionRows > 0) {
+      warnings.push(`${result.optionRows} option row(s) were skipped. Options import is not supported yet.`)
+    }
+    if (result.openPositions.length > 0) {
+      warnings.push(
+        `Open position(s) not imported (still held): ${result.openPositions
+          .map((p) => `${p.shares} ${p.symbol}`)
+          .join(", ")}`
+      )
+    }
+    if (result.unmatchedSells.length > 0) {
+      warnings.push(
+        `Sell(s) with no matching buy were skipped: ${result.unmatchedSells
+          .map((u) => `${u.shares} ${u.symbol}`)
+          .join(", ")}`
+      )
+    }
+    if (!stopPct || stopPct <= 0) {
+      warnings.push(
+        "No stop distance % was provided, so R-multiple and risk % will be 0 until you set a stop loss on each trade."
+      )
+    }
+
+    const convertedTrades = result.roundTrips.map((roundTrip) =>
+      convertFidelityRoundTripToTrade(roundTrip, {
+        settings,
+        defaultIdealRisk,
+        stopDistancePercent: stopPct,
+      })
+    )
+
+    const { trades: uniqueTrades, duplicates: foundDuplicates } = checkForDuplicates(convertedTrades)
+
+    setFidelityWarnings(warnings)
+    setPreviewTrades(uniqueTrades)
+    setDuplicates(foundDuplicates)
+
+    console.log("=== IMPORT SUMMARY (Fidelity) ===")
+    console.log("Executions parsed:", result.executions.length)
+    console.log("Round trips created:", result.roundTrips.length)
+    console.log("Non-trade rows skipped:", result.skippedRows)
+    console.log("Option rows skipped:", result.optionRows)
+    console.log("Open positions:", result.openPositions.length)
+    console.log("Unmatched sells:", result.unmatchedSells.length)
+    console.log("Unique trades after duplicate check:", uniqueTrades.length)
+    console.log("======================")
+
+    if (foundDuplicates.length > 0) {
+      alert(`Found ${foundDuplicates.length} duplicate trades that will be skipped: ${foundDuplicates.join(", ")}`)
+    }
+  }
+
   const processCSV = () => {
     if (!csvData.trim()) return
 
@@ -256,37 +354,11 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
 
     try {
       console.log("Processing CSV data:", csvData.substring(0, 200) + "...")
-      
-      const brokerTrades = parseBrokerCSV(csvData)
-      console.log("Parsed broker trades:", brokerTrades.length)
-      
-      const convertedTrades = brokerTrades.map((trade, index) => {
-        try {
-          return convertBrokerTradeToTrade(trade)
-        } catch (error) {
-          console.error(`Error converting trade ${index + 1}:`, error)
-          const errorMessage = error instanceof Error ? error.message : String(error)
-          throw new Error(`Error converting trade ${index + 1}: ${errorMessage}`)
-        }
-      })
-      
-      console.log("Converted trades:", convertedTrades.length)
-      
-      const { trades: uniqueTrades, duplicates: foundDuplicates } = checkForDuplicates(convertedTrades)
 
-      setPreviewTrades(uniqueTrades)
-      setDuplicates(foundDuplicates)
-      
-      console.log("=== IMPORT SUMMARY ===")
-      console.log("Total CSV rows processed:", brokerTrades.length)
-      console.log("Successfully converted trades:", convertedTrades.length)
-      console.log("Unique trades after duplicate check:", uniqueTrades.length)
-      console.log("Duplicates found:", foundDuplicates.length)
-      console.log("Duplicate tickets:", foundDuplicates)
-      console.log("======================")
-      
-      if (foundDuplicates.length > 0) {
-        alert(`Found ${foundDuplicates.length} duplicate trades that will be skipped: ${foundDuplicates.join(", ")}`)
+      if (broker === "fidelity") {
+        processFidelityCSV()
+      } else {
+        processExnessCSV()
       }
     } catch (error) {
       console.error("Error processing CSV:", error)
@@ -403,6 +475,33 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
             </TabsList>
 
             <TabsContent value="csv" className="space-y-6">
+              {/* Broker Selection */}
+              <div>
+                <Label htmlFor="broker">Broker CSV Format</Label>
+                <Select
+                  value={broker}
+                  onValueChange={(value) => {
+                    setBroker(value as "exness" | "fidelity")
+                    setFidelityWarnings([])
+                    setPreviewTrades([])
+                    setDuplicates([])
+                  }}
+                >
+                  <SelectTrigger id="broker" className="mt-1">
+                    <SelectValue placeholder="Select broker" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="exness">Exness.com (Forex/Crypto)</SelectItem>
+                    <SelectItem value="fidelity">Fidelity (Stocks/ETFs)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {broker === "fidelity"
+                    ? "Fidelity: Accounts & Trade → Activity & Orders → History → Download (CSV). One row per order; buys and sells are paired into round trips."
+                    : "Exness: broker statement export (opening_time_utc, lots, symbol, profit_usd, etc.)."}
+                </p>
+              </div>
+
               {/* Default Ideal Risk Setting */}
               <div>
                 <Label htmlFor="defaultIdealRisk">Default Ideal Risk Amount ($)</Label>
@@ -418,6 +517,27 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
                   This will be used as the ideal risk amount for all imported trades
                 </p>
               </div>
+
+              {/* Fidelity Stop Distance Setting */}
+              {broker === "fidelity" && (
+                <div>
+                  <Label htmlFor="stopDistancePercent">Default Stop Loss Distance (% from entry)</Label>
+                  <Input
+                    id="stopDistancePercent"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    placeholder="e.g. 2 for 2% (optional)"
+                    value={stopDistancePercent}
+                    onChange={(e) => setStopDistancePercent(e.target.value)}
+                    className="mt-1"
+                  />
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Fidelity exports do not include stop losses. Enter the stop distance you typically use so risk
+                    metrics (R-multiple, risk %) are calculated. You can still edit each trade afterwards.
+                  </p>
+                </div>
+              )}
 
               {/* File Upload */}
               <div>
@@ -451,6 +571,23 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
                   {isProcessing ? "Processing..." : "Process CSV"}
                 </Button>
               </div>
+
+              {/* Fidelity Warnings */}
+              {fidelityWarnings.length > 0 && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex items-start gap-2">
+                    <Info className="h-4 w-4 text-blue-700 mt-0.5" />
+                    <div>
+                      <span className="font-medium text-blue-800">Import Notes</span>
+                      <ul className="text-sm text-blue-700 mt-1 space-y-1">
+                        {fidelityWarnings.map((warning, index) => (
+                          <li key={index}>• {warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="json" className="space-y-6">
