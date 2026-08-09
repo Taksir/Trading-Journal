@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Edit3 } from "lucide-react"
 import type { Trade, FilterOptions } from "@/types/trade"
+import type { TradingAccount } from "@/types/account"
 import { TradeEntryForm } from "../../trade-entry-form"
 import { BulkUpdateDialogWrapper } from "../../shared/bulk-update-dialog-wrapper"
 import { AdvancedFilterDialogWrapper } from "../../shared/advanced-filter-dialog-wrapper"
@@ -24,9 +25,10 @@ interface TradesListProps {
   onUpdateTrade: (trade: Trade) => void
   onBulkUpdate: (tradeIds: string[], updates: Partial<Trade>) => void
   settings: any
+  accounts?: TradingAccount[]
 }
 
-export function TradesList({ trades, onDeleteTrade, onUpdateTrade, onBulkUpdate, settings }: TradesListProps) {
+export function TradesList({ trades, onDeleteTrade, onUpdateTrade, onBulkUpdate, settings, accounts }: TradesListProps) {
   // State for dialogs and UI
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null)
   const [viewingTrade, setViewingTrade] = useState<Trade | null>(null)
@@ -136,6 +138,7 @@ export function TradesList({ trades, onDeleteTrade, onUpdateTrade, onBulkUpdate,
           onEditTrade={setEditingTrade}
           onViewTrade={setViewingTrade}
           onDeleteTrade={onDeleteTrade}
+          accounts={accounts}
         />
 
         <PaginationControls
@@ -158,6 +161,7 @@ export function TradesList({ trades, onDeleteTrade, onUpdateTrade, onBulkUpdate,
           }}
           onCancel={() => setEditingTrade(null)}
           settings={settings}
+          accounts={accounts}
         />
       )}
 

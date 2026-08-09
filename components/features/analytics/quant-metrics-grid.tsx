@@ -16,17 +16,20 @@ import {
   Layers,
 } from "lucide-react"
 import type { BalanceAdjustment, Settings, Trade } from "@/types/trade"
+import type { AccountScope, TradingAccount } from "@/types/account"
 import {
-  calculateAdjustedAccountBalance,
-  calculateNetTradingPnL,
-  calculateQuantMetrics,
-} from "@/utils/quant-metrics"
+  calculateScopeAdjustedBalance,
+  calculateScopeQuantMetrics,
+  filterTradesByScope,
+} from "@/utils/account-analytics"
 import { StatsCard } from "./stats-card"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
 interface QuantMetricsGridProps {
   trades: Trade[]
   settings: Settings
+  accounts?: TradingAccount[]
+  scope?: AccountScope
   balanceAdjustments?: BalanceAdjustment[]
 }
 
@@ -58,13 +61,35 @@ function formatSignedDollars(value: number): string {
   return `${value > 0 ? "+" : value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`
 }
 
-export function QuantMetricsGrid({ trades, settings, balanceAdjustments }: QuantMetricsGridProps) {
-  const metrics = useMemo(() => calculateQuantMetrics(trades, settings), [trades, settings])
-  const adjustedBalance = useMemo(
-    () => calculateAdjustedAccountBalance(trades, settings, balanceAdjustments),
-    [trades, settings, balanceAdjustments],
+export function QuantMetricsGrid({
+  trades,
+  settings,
+  accounts,
+  scope,
+  balanceAdjustments,
+}: QuantMetricsGridProps) {
+  const effectiveScope: AccountScope = scope || { kind: "all" }
+  const effectiveAccounts: TradingAccount[] = accounts || []
+  const scopedTrades = useMemo(() => filterTradesByScope(trades, effectiveScope), [trades, effectiveScope])
+  const metrics = useMemo(
+    () =>
+      calculateScopeQuantMetrics({
+        trades,
+        scope: effectiveScope,
+        accounts: effectiveAccounts,
+        adjustments: balanceAdjustments,
+      }),
+    [trades, effectiveScope, effectiveAccounts, balanceAdjustments],
   )
-  const netTradingPnL = useMemo(() => calculateNetTradingPnL(trades), [trades])
+  const adjustedBalance = useMemo(
+    () =>
+      calculateScopeAdjustedBalance(effectiveScope, effectiveAccounts, trades, balanceAdjustments || []),
+    [effectiveScope, effectiveAccounts, trades, balanceAdjustments],
+  )
+  const netTradingPnL = useMemo(
+    () => scopedTrades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0),
+    [scopedTrades],
+  )
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -170,8 +195,10 @@ export function QuantMetricsGrid({ trades, settings, balanceAdjustments }: Quant
           title="Total Trades"
           value={`${metrics.totalTrades}`}
           icon={<Layers className="h-4 w-4" />}
-          description={`${metrics.winningTrades} wins • ${metrics.losingTrades} losses • ${metrics.breakevenTrades} breakeven`}
-          tooltip="Number of closed trades in the journal."
+          description={`${metrics.winningTrades} wins • ${metrics.losingTrades} losses • ${metrics.breakevenTrades} breakeven${
+            metrics.openTrades > 0 ? ` • ${metrics.openTrades} open` : ""
+          }`}
+          tooltip="Number of closed trades in the journal. Open trades are excluded from performance metrics."
         />
       </div>
     </TooltipProvider>

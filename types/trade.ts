@@ -1,5 +1,7 @@
 export interface Trade {
   id: string
+  /** Stable id of the TradingAccount this trade belongs to (see types/account.ts). */
+  accountId?: string
   date: string
   time: string
   endDate?: string // Optional for trades that are still open
@@ -29,10 +31,31 @@ export interface Trade {
   tags: string[]
   screenshot?: string
   outcome: "Win" | "Loss" | "Breakeven"
-  grade: string
+  grade: string // Execution/risk grade used by the risk-management calculations
   ticket?: string
   session: string
   dayOfWeek: string
+
+  // ---- Setup classification (see types/setup.ts) ----
+  setupId?: string
+
+  // ---- Human review fields (never overwritten by automation) ----
+  /** Human judgment of setup quality. Distinct from `grade` and from future automated grades. */
+  manualSetupGrade?: ManualSetupGrade
+  /** Why I took the trade / what I expected. */
+  tradeThesis?: string
+  /** Post-trade observations. */
+  reviewNotes?: string
+
+  // ---- Stop tracking ----
+  /** Manually specified stop price. Mirrors `stopLoss` when a stop is known. */
+  plannedStopPrice?: number
+  /** Planned stop distance in percent of entry. May be manually specified or inferred. */
+  plannedStopPct?: number
+  /** Distinguishes a manual stop from an inferred stop from "no stop information". */
+  stopSource?: StopSource
+  /** Realized-loss-based inferred stop (convenience approximation, not historical truth). */
+  inferredStopPct?: number
 }
 
 export interface TradeStats {
@@ -117,6 +140,8 @@ export interface BrokerTrade {
 
 export interface BalanceAdjustment {
   id: string
+  /** Stable id of the TradingAccount this adjustment belongs to. */
+  accountId?: string
   amount: number
   reason: string
   type: "add" | "subtract"
@@ -124,3 +149,9 @@ export interface BalanceAdjustment {
   time: string
   notes?: string
 }
+
+/** Human-judgment setup grade. Distinct from the automated/risk `grade` field. */
+export type ManualSetupGrade = "A+" | "A" | "B" | "C" | "D" | "F" | null
+
+/** How a trade's planned stop was obtained. */
+export type StopSource = "manual" | "inferred" | "none"

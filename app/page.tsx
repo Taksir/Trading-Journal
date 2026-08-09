@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { Plus, DollarSign, Upload, Download, Settings } from "lucide-react"
+import { Plus, DollarSign, Upload, Download, Settings, Trash2 } from "lucide-react"
 import { TradeEntryForm, TradesList, AnalyticsDashboard } from "@/components/index"
 import { AdvancedAnalytics } from "@/components/advanced-analytics"
 import { SessionAnalytics } from "@/components/session-analytics"
@@ -11,11 +11,23 @@ import { SystemReports } from "@/components/system-reports"
 import { SettingsPanel } from "@/components/settings-panel"
 import { ImportDialog } from "@/components/import-dialog"
 import { BalanceAdjuster } from "@/components/balance-adjuster"
+import { AccountSelector } from "@/components/features/accounts/account-selector"
+import { AccountManager } from "@/components/features/accounts/account-manager"
 import type { Trade, TradeStats, Settings as SettingsType, BalanceAdjustment } from "@/types/trade"
+import type { AccountScope, TradingAccount } from "@/types/account"
 import { recalculateTradeMetrics } from "@/utils/trade-calculations"
 import { calculateAdjustedAccountBalance, calculateNetTradingPnL } from "@/utils/quant-metrics"
 import { QuantMetricsGrid } from "@/components/features/analytics/quant-metrics-grid"
 import { FeeAnalysis } from "@/components/fee-analysis"
+import {
+  ACCOUNTS_STORAGE_KEY,
+  DEFAULT_ACCOUNT_ID,
+  ensureAccountsMigration,
+} from "@/utils/account-migration"
+import { createId } from "@/utils/ids"
+import { filterTradesByScope, filterAdjustmentsByScope } from "@/utils/account-analytics"
+
+const ACCOUNT_SCOPE_KEY = "trading-journal-account-scope"
 
 const DEFAULT_SETTINGS: SettingsType = {
   accountBalance: 100,
@@ -51,21 +63,31 @@ const DEFAULT_SETTINGS: SettingsType = {
 export default function TradingJournal() {
   const [trades, setTrades] = useState<Trade[]>([])
   const [balanceAdjustments, setBalanceAdjustments] = useState<BalanceAdjustment[]>([])
+  const [accounts, setAccounts] = useState<TradingAccount[]>([])
+  const [selectedAccountScope, setSelectedAccountScope] = useState<AccountScope>({ kind: "all" })
   const [settings, setSettings] = useState<SettingsType>(DEFAULT_SETTINGS)
   const [showTradeForm, setShowTradeForm] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showBalanceAdjuster, setShowBalanceAdjuster] = useState(false)
+  const [showAccountManager, setShowAccountManager] = useState(false)
 
   // Load data from localStorage on component mount
   useEffect(() => {
     const savedTrades = localStorage.getItem("trading-journal-trades")
     const savedSettings = localStorage.getItem("trading-journal-settings")
     const savedAdjustments = localStorage.getItem("trading-journal-balance-adjustments")
+    const savedAccounts = localStorage.getItem(ACCOUNTS_STORAGE_KEY)
+    const savedScope = localStorage.getItem(ACCOUNT_SCOPE_KEY)
+
+    let loadedTrades: Trade[] = []
+    let loadedSettings: SettingsType = DEFAULT_SETTINGS
+    let loadedAdjustments: BalanceAdjustment[] = []
+    let loadedAccounts: TradingAccount[] = []
 
     if (savedTrades) {
       try {
-        setTrades(JSON.parse(savedTrades))
+        loadedTrades = JSON.parse(savedTrades)
       } catch (error) {
         console.error("Error loading trades:", error)
       }
@@ -73,8 +95,7 @@ export default function TradingJournal() {
 
     if (savedSettings) {
       try {
-        const parsedSettings = JSON.parse(savedSettings)
-        setSettings({ ...DEFAULT_SETTINGS, ...parsedSettings })
+        loadedSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) }
       } catch (error) {
         console.error("Error loading settings:", error)
       }
@@ -82,9 +103,46 @@ export default function TradingJournal() {
 
     if (savedAdjustments) {
       try {
-        setBalanceAdjustments(JSON.parse(savedAdjustments))
+        loadedAdjustments = JSON.parse(savedAdjustments)
       } catch (error) {
         console.error("Error loading balance adjustments:", error)
+      }
+    }
+
+    if (savedAccounts) {
+      try {
+        loadedAccounts = JSON.parse(savedAccounts)
+      } catch (error) {
+        console.error("Error loading accounts:", error)
+      }
+    }
+
+    // Migrate legacy data (trades/adjustments without an accountId) into a
+    // default account. Idempotent: running it on already-migrated data is a
+    // no-op that returns the same references.
+    const migrated = ensureAccountsMigration({
+      trades: loadedTrades,
+      settings: loadedSettings,
+      balanceAdjustments: loadedAdjustments,
+      accounts: loadedAccounts,
+    })
+    if (migrated.trades !== loadedTrades) loadedTrades = migrated.trades
+    if (migrated.balanceAdjustments !== loadedAdjustments) loadedAdjustments = migrated.balanceAdjustments
+    loadedAccounts = migrated.accounts
+
+    setTrades(loadedTrades)
+    setSettings(loadedSettings)
+    setBalanceAdjustments(loadedAdjustments)
+    setAccounts(loadedAccounts)
+
+    if (savedScope) {
+      try {
+        const parsedScope = JSON.parse(savedScope)
+        if (parsedScope && (parsedScope.kind === "all" || parsedScope.kind === "selected")) {
+          setSelectedAccountScope(parsedScope)
+        }
+      } catch (error) {
+        console.error("Error loading account scope:", error)
       }
     }
   }, [])
@@ -102,6 +160,36 @@ export default function TradingJournal() {
     localStorage.setItem("trading-journal-balance-adjustments", JSON.stringify(balanceAdjustments))
   }, [balanceAdjustments])
 
+  useEffect(() => {
+    localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts))
+  }, [accounts])
+
+  useEffect(() => {
+    localStorage.setItem(ACCOUNT_SCOPE_KEY, JSON.stringify(selectedAccountScope))
+  }, [selectedAccountScope])
+
+  const addAccount = (account: Omit<TradingAccount, "id" | "createdAt">) => {
+    const newAccount: TradingAccount = {
+      ...account,
+      id: createId(),
+      createdAt: new Date().toISOString(),
+    }
+    setAccounts((prev) => [...prev, newAccount])
+  }
+
+  const updateAccount = (updatedAccount: TradingAccount) => {
+    setAccounts((prev) => prev.map((account) => (account.id === updatedAccount.id ? updatedAccount : account)))
+  }
+
+  const deleteAccount = (id: string) => {
+    setAccounts((prev) => prev.filter((account) => account.id !== id))
+    setSelectedAccountScope((prev) =>
+      prev.kind === "selected" && prev.accountIds.includes(id)
+        ? { kind: "selected", accountIds: prev.accountIds.filter((accountId) => accountId !== id) }
+        : prev,
+    )
+  }
+
   const addTrade = (tradeData: Omit<Trade, "id">) => {
     const newTrade: Trade = {
       ...tradeData,
@@ -117,6 +205,12 @@ export default function TradingJournal() {
 
   const deleteTrade = (id: string) => {
     setTrades((prev) => prev.filter((trade) => trade.id !== id))
+  }
+
+  const handleRemoveAllTrades = () => {
+    if (window.confirm("Remove ALL trades? This cannot be undone.")) {
+      setTrades([])
+    }
   }
 
   const handleBulkUpdate = (tradeIds: string[], updates: Partial<Trade>) => {
@@ -185,7 +279,7 @@ export default function TradingJournal() {
       trades,
       settings,
       balanceAdjustments,
-      stats: calculateStats(),
+      stats: calculateStats(trades),
     }
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" })
@@ -210,8 +304,8 @@ export default function TradingJournal() {
     setBalanceAdjustments((prev) => prev.filter((adj) => adj.id !== id))
   }
 
-  const calculateStats = (): TradeStats => {
-    if (trades.length === 0) {
+  const calculateStats = (tradeList: Trade[]): TradeStats => {
+    if (tradeList.length === 0) {
       return {
         totalTrades: 0,
         winRate: 0,
@@ -237,37 +331,37 @@ export default function TradingJournal() {
       }
     }
 
-    const totalTrades = trades.length
-    const winningTrades = trades.filter((t) => t.pnl > 0).length // Count winning trades based on net P&L
-    const losingTrades = trades.filter((t) => t.pnl < 0).length // Count losing trades based on net P&L
+    const totalTrades = tradeList.length
+    const winningTrades = tradeList.filter((t) => t.pnl > 0).length // Count winning trades based on net P&L
+    const losingTrades = tradeList.filter((t) => t.pnl < 0).length // Count losing trades based on net P&L
     const winRate = (winningTrades / totalTrades) * 100
 
-    const totalNetPnL = trades.reduce((sum, t) => sum + t.pnl, 0) // pnl field contains net P&L
-    const totalFees = trades.reduce((sum, t) => sum + t.fee, 0)
+    const totalNetPnL = tradeList.reduce((sum, t) => sum + t.pnl, 0) // pnl field contains net P&L
+    const totalFees = tradeList.reduce((sum, t) => sum + t.fee, 0)
     const totalGrossPnL = totalNetPnL + totalFees // Calculate gross P&L for fee analysis
-    const totalR = trades.reduce((sum, t) => sum + t.rMultiple, 0)
-    const totalExpectedR = trades.reduce((sum, t) => sum + (t.expectedR || 0), 0) // Sum of expected R values
+    const totalR = tradeList.reduce((sum, t) => sum + t.rMultiple, 0)
+    const totalExpectedR = tradeList.reduce((sum, t) => sum + (t.expectedR || 0), 0) // Sum of expected R values
     
-    const totalRisk = trades.reduce((sum, t) => sum + t.riskAmount, 0)
-    const totalIdealRisk = trades.reduce((sum, t) => sum + (t.idealRiskAmount || 0), 0)
+    const totalRisk = tradeList.reduce((sum, t) => sum + t.riskAmount, 0)
+    const totalIdealRisk = tradeList.reduce((sum, t) => sum + (t.idealRiskAmount || 0), 0)
 
     const averageR = totalR / totalTrades
     const averageExpectedR = totalExpectedR / totalTrades
     const expectedValue = averageExpectedR // Expected Value is the average Expected R
 
-    const grossProfit = trades.filter((t) => t.pnl > 0).reduce((sum, t) => sum + t.pnl, 0)
-    const grossLoss = Math.abs(trades.filter((t) => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0))
+    const grossProfit = tradeList.filter((t) => t.pnl > 0).reduce((sum, t) => sum + t.pnl, 0)
+    const grossLoss = Math.abs(tradeList.filter((t) => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0))
     const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Number.POSITIVE_INFINITY : 0
 
     const expectancy = totalNetPnL / totalTrades // Expectancy is average net P&L per trade
     const expectedExpectancy = averageExpectedR
 
-    const largestWin = Math.max(...trades.map((t) => t.pnl), 0)
-    const largestLoss = Math.min(...trades.map((t) => t.pnl), 0)
+    const largestWin = Math.max(...tradeList.map((t) => t.pnl), 0)
+    const largestLoss = Math.min(...tradeList.map((t) => t.pnl), 0)
 
-    const overRiskedTrades = trades.filter((t) => t.isOverRisked).length
-    const underRiskedTrades = trades.filter((t) => t.isUnderRisked).length
-    const avgRiskDeviation = trades.reduce((sum, t) => sum + (t.riskDeviation || 0), 0) / totalTrades
+    const overRiskedTrades = tradeList.filter((t) => t.isOverRisked).length
+    const underRiskedTrades = tradeList.filter((t) => t.isUnderRisked).length
+    const avgRiskDeviation = tradeList.reduce((sum, t) => sum + (t.riskDeviation || 0), 0) / totalTrades
 
     return {
       totalTrades,
@@ -294,7 +388,12 @@ export default function TradingJournal() {
     }
   }
 
-  const stats = calculateStats()
+  // Account-scope derived data: every analytics surface consumes the scoped
+  // subset so All Accounts and per-account views stay consistent.
+  const scopedTrades = filterTradesByScope(trades, selectedAccountScope)
+  const scopedAdjustments = filterAdjustmentsByScope(balanceAdjustments, selectedAccountScope)
+
+  const stats = calculateStats(scopedTrades)
 
   // Calculate adjusted account balance
   const netTradingPnL = calculateNetTradingPnL(trades) // stats.totalPnL contains net P&L
@@ -310,6 +409,14 @@ export default function TradingJournal() {
             <p className="text-muted-foreground">Track and analyze your trading performance</p>
           </div>
           <div className="flex gap-2">
+            <AccountSelector
+              scope={selectedAccountScope}
+              accounts={accounts}
+              trades={trades}
+              adjustments={balanceAdjustments}
+              onScopeChange={setSelectedAccountScope}
+              onManageAccounts={() => setShowAccountManager(true)}
+            />
             <Button onClick={() => setShowBalanceAdjuster(true)} variant="outline" className="gap-2">
               <DollarSign className="h-4 w-4" />
               Balance
@@ -322,6 +429,10 @@ export default function TradingJournal() {
               <Download className="h-4 w-4" />
               Export All
             </Button>
+            <Button onClick={handleRemoveAllTrades} variant="outline" className="gap-2 bg-transparent text-destructive hover:text-destructive">
+              <Trash2 className="h-4 w-4" />
+              Remove All
+            </Button>
             <Button onClick={() => setShowSettings(true)} variant="outline" size="icon">
               <Settings className="h-4 w-4" />
             </Button>
@@ -333,7 +444,13 @@ export default function TradingJournal() {
         </div>
 
         {/* Quantitative Performance Overview */}
-        <QuantMetricsGrid trades={trades} settings={settings} balanceAdjustments={balanceAdjustments} />
+        <QuantMetricsGrid
+          trades={trades}
+          settings={settings}
+          accounts={accounts}
+          scope={selectedAccountScope}
+          balanceAdjustments={balanceAdjustments}
+        />
 
         {/* Main Content */}
         <Tabs defaultValue="trades" className="space-y-6">
@@ -348,37 +465,50 @@ export default function TradingJournal() {
 
           <TabsContent value="trades">
             <TradesList
-              trades={trades}
+              trades={scopedTrades}
               onDeleteTrade={deleteTrade}
               onUpdateTrade={updateTrade}
               onBulkUpdate={handleBulkUpdate}
               settings={settings}
+              accounts={accounts}
             />
           </TabsContent>
 
           <TabsContent value="dashboard">
-            <AnalyticsDashboard trades={trades} stats={stats} settings={settings} />
+            <AnalyticsDashboard trades={scopedTrades} stats={stats} settings={settings} />
           </TabsContent>
 
           <TabsContent value="advanced">
-            <AdvancedAnalytics trades={trades} stats={stats} />
+            <AdvancedAnalytics trades={scopedTrades} stats={stats} />
           </TabsContent>
 
           <TabsContent value="sessions">
-            <SessionAnalytics trades={trades} settings={settings} />
+            <SessionAnalytics trades={scopedTrades} settings={settings} />
           </TabsContent>
 
           <TabsContent value="systems">
-            <SystemReports trades={trades} settings={settings} />
+            <SystemReports trades={scopedTrades} settings={settings} />
           </TabsContent>
           <TabsContent value="fee-analysis">
-            <FeeAnalysis trades={trades} />
+            <FeeAnalysis trades={scopedTrades} />
           </TabsContent>
         </Tabs>
 
         {/* Dialogs */}
         {showTradeForm && (
-          <TradeEntryForm onSubmit={addTrade} onCancel={() => setShowTradeForm(false)} settings={settings} />
+          <TradeEntryForm
+            onSubmit={addTrade}
+            onCancel={() => setShowTradeForm(false)}
+            settings={settings}
+            accounts={accounts}
+            defaultAccountId={
+              selectedAccountScope.kind === "selected" && selectedAccountScope.accountIds.length === 1
+                ? selectedAccountScope.accountIds[0]
+                : accounts.length > 0
+                  ? accounts[0].id
+                  : undefined
+            }
+          />
         )}
 
         {showImportDialog && (
@@ -387,6 +517,14 @@ export default function TradingJournal() {
             onCancel={() => setShowImportDialog(false)}
             settings={settings}
             existingTrades={trades}
+            accounts={accounts}
+            defaultAccountId={
+              selectedAccountScope.kind === "selected" && selectedAccountScope.accountIds.length === 1
+                ? selectedAccountScope.accountIds[0]
+                : accounts.length > 0
+                  ? accounts[0].id
+                  : undefined
+            }
           />
         )}
 
@@ -398,9 +536,28 @@ export default function TradingJournal() {
           <BalanceAdjuster
             currentBalance={adjustedAccountBalance}
             adjustments={balanceAdjustments}
+            accounts={accounts}
+            defaultAccountId={
+              selectedAccountScope.kind === "selected" && selectedAccountScope.accountIds.length === 1
+                ? selectedAccountScope.accountIds[0]
+                : accounts.length > 0
+                  ? accounts[0].id
+                  : undefined
+            }
             onAddAdjustment={addBalanceAdjustment}
             onDeleteAdjustment={deleteBalanceAdjustment}
             onCancel={() => setShowBalanceAdjuster(false)}
+          />
+        )}
+
+        {showAccountManager && (
+          <AccountManager
+            accounts={accounts}
+            trades={trades}
+            onAddAccount={addAccount}
+            onUpdateAccount={updateAccount}
+            onDeleteAccount={deleteAccount}
+            onCancel={() => setShowAccountManager(false)}
           />
         )}
       </div>

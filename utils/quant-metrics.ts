@@ -8,20 +8,25 @@ import type { BalanceAdjustment, Settings, Trade } from "@/types/trade"
  * so this module can be unit tested with plain scripts.
  *
  * Notes on semantics:
- * - The journal has no explicit open/close status. Every stored trade carries a
- *   realized net P&L. Trades are therefore treated as "closed" for these metrics.
- * - Chronological order is the CLOSE time: `endDate + endTime` when available,
- *   falling back to `date + time`.
+ * - Only CLOSED trades participate in the quantitative metrics. A trade is
+ *   closed when it has a close date (`endDate`), which is the schema's canonical
+ *   open/closed signal (see `types/trade.ts`). See `isTradeClosed`.
+ * - Chronological order is the CLOSE time: `endDate + endTime`.
  * - Deposits/withdrawals (balance adjustments) are NOT included in the trading
  *   equity curve, drawdown, or daily returns. Only `settings.accountBalance`
  *   (the starting balance) plus realized trading P&L participate, so manual
  *   balance changes never inflate or deflate strategy performance.
  * - Trade outcome is classified purely by NET pnl: pnl > 0 => win,
  *   pnl < 0 => loss, pnl === 0 => breakeven.
+ * - None of these functions mutate the input `trades` array; they always work on
+ *   filtered/copied arrays.
  */
 
 export interface QuantMetrics {
+  /** Number of CLOSED trades. */
   totalTrades: number
+  /** Number of OPEN (not yet closed) trades. */
+  openTrades: number
   winningTrades: number
   losingTrades: number
   breakevenTrades: number
@@ -67,6 +72,22 @@ export interface DrawdownResult {
   maxDrawdownAmount: number
 }
 
+/**
+ * Account-aware options for `calculateQuantMetrics`.
+ *
+ * Trade-level metrics always operate on the `trades` passed in (callers pass
+ * already scope-filtered trades). The equity-level metrics (daily returns,
+ * Sharpe, Sortino, drawdown) use the supplied starting balance / precomputed
+ * series so the correct selected-account context is used instead of one global
+ * `settings.accountBalance`. When `dailyReturns`/`drawdown` are omitted they
+ * are derived from the closed trades and `startingBalance` exactly as before.
+ */
+export interface QuantMetricsOptions {
+  startingBalance: number
+  dailyReturns?: DailyReturnSeries
+  drawdown?: DrawdownResult
+}
+
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
 function isFiniteNumber(value: unknown): value is number {
@@ -76,6 +97,17 @@ function isFiniteNumber(value: unknown): value is number {
 function safePnl(trade: Trade): number {
   const value = Number(trade.pnl)
   return isFiniteNumber(value) ? value : 0
+}
+
+/**
+ * Canonical closed/open rule: a trade is CLOSED when it has a close date
+ * (`endDate`). This matches the schema comment in `types/trade.ts`
+ * ("Optional for trades that are still open"). Everything else (exitPrice,
+ * pnl, outcome) is NOT a reliable signal: breakeven trades legitimately have
+ * pnl === 0, and pnl may be a placeholder on open positions.
+ */
+export function isTradeClosed(trade: Trade): boolean {
+  return Boolean(trade && typeof trade.endDate === "string" && trade.endDate.length > 0)
 }
 
 function parseTimestamp(date: string | undefined, time: string | undefined): number | null {
@@ -164,7 +196,7 @@ export function calculateDailyReturns(trades: Trade[], startingBalance: number):
   let first: string | null = null
   let last: string | null = null
 
-  for (const trade of trades) {
+  for (const trade of trades.filter(isTradeClosed)) {
     const key = getCloseDateKey(trade)
     if (!DATE_KEY_PATTERN.test(key)) continue
     daily.set(key, (daily.get(key) || 0) + safePnl(trade))
@@ -204,6 +236,7 @@ export function calculateDailyReturns(trades: Trade[], startingBalance: number):
  */
 export function calculateDrawdown(trades: Trade[], startingBalance: number): DrawdownResult {
   const sorted = trades
+    .filter(isTradeClosed)
     .map((trade) => ({ trade, timestamp: getCloseTimestamp(trade) }))
     .filter((entry): entry is { trade: Trade; timestamp: number } => entry.timestamp !== null)
     .sort((a, b) => a.timestamp - b.timestamp)
@@ -238,6 +271,7 @@ export function calculateDrawdown(trades: Trade[], startingBalance: number): Dra
  */
 export function calculateLossStreaks(trades: Trade[]): LossStreaks {
   const sorted = trades
+    .filter(isTradeClosed)
     .map((trade) => ({ trade, timestamp: getCloseTimestamp(trade) }))
     .filter((entry): entry is { trade: Trade; timestamp: number } => entry.timestamp !== null)
     .sort((a, b) => a.timestamp - b.timestamp)
@@ -286,8 +320,10 @@ export function calculateAdjustedAccountBalance(
   return base + calculateBalanceAdjustmentTotal(adjustments) + calculateNetTradingPnL(trades)
 }
 
-export function calculateQuantMetrics(trades: Trade[], settings: Settings): QuantMetrics {
-  const totalTrades = trades.length
+export function calculateQuantMetrics(trades: Trade[], options: QuantMetricsOptions): QuantMetrics {
+  const closedTrades = trades.filter(isTradeClosed)
+  const openTrades = trades.length - closedTrades.length
+  const totalTrades = closedTrades.length
 
   let winningTrades = 0
   let losingTrades = 0
@@ -301,7 +337,7 @@ export function calculateQuantMetrics(trades: Trade[], settings: Settings): Quan
   const lossR: number[] = []
   const allR: number[] = []
 
-  for (const trade of trades) {
+  for (const trade of closedTrades) {
     const pnl = safePnl(trade)
     const returnPct = calculateTradeReturnPct(trade)
     const netR = calculateNetR(trade)
@@ -340,8 +376,8 @@ export function calculateQuantMetrics(trades: Trade[], settings: Settings): Quan
   const expectancyR = mean(allR)
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Number.POSITIVE_INFINITY : null
 
-  const startingBalance = isFiniteNumber(settings?.accountBalance) ? settings.accountBalance : 0
-  const { days, returns } = calculateDailyReturns(trades, startingBalance)
+  const startingBalance = isFiniteNumber(options?.startingBalance) ? options.startingBalance : 0
+  const { days, returns } = options?.dailyReturns ?? calculateDailyReturns(closedTrades, startingBalance)
   const dailyObservationCount = days.length
 
   let sharpeRatio: number | null = null
@@ -363,11 +399,13 @@ export function calculateQuantMetrics(trades: Trade[], settings: Settings): Quan
     }
   }
 
-  const { maxDrawdownPct, maxDrawdownAmount } = calculateDrawdown(trades, startingBalance)
-  const { maxConsecutiveLosses, currentConsecutiveLosses } = calculateLossStreaks(trades)
+  const drawdownResult = options?.drawdown ?? calculateDrawdown(closedTrades, startingBalance)
+  const { maxDrawdownPct, maxDrawdownAmount } = drawdownResult
+  const { maxConsecutiveLosses, currentConsecutiveLosses } = calculateLossStreaks(closedTrades)
 
   return {
     totalTrades,
+    openTrades,
     winningTrades,
     losingTrades,
     breakevenTrades,

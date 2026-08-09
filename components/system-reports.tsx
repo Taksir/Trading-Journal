@@ -137,9 +137,11 @@ export function SystemReports({ trades }: SystemReportsProps) {
       let maxWinStreak = 0
       let maxLossStreak = 0
 
-      systemTrades
-        .sort((a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime())
-        .forEach((trade) => {
+      const sortedSystemTrades = [...systemTrades].sort(
+        (a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime(),
+      )
+
+      sortedSystemTrades.forEach((trade) => {
           if ((trade.expectedR || 0) > 0) {
             currentWinStreak++
             currentLossStreak = 0

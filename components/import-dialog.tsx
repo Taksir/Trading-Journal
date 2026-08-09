@@ -15,15 +15,27 @@ import { getTradingSession, getDayOfWeek, DEFAULT_TRADING_SESSIONS } from "@/uti
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { parseFidelityCsv } from "@/lib/fidelity-parser"
 import { convertFidelityRoundTripToTrade } from "@/lib/fidelity-to-trade"
+import type { TradingAccount } from "@/types/account"
+import { detectDuplicates } from "@/utils/import-dedupe"
+import { applyStopInfo } from "@/utils/trade-review"
 
 interface ImportDialogProps {
   onImport: (trades: Omit<Trade, "id">[], duplicates?: string[]) => void
   onCancel: () => void
   settings: Settings
   existingTrades: Trade[]
+  accounts?: TradingAccount[]
+  defaultAccountId?: string
 }
 
-export function ImportDialog({ onImport, onCancel, settings, existingTrades }: ImportDialogProps) {
+export function ImportDialog({
+  onImport,
+  onCancel,
+  settings,
+  existingTrades,
+  accounts = [],
+  defaultAccountId,
+}: ImportDialogProps) {
   const [csvData, setCsvData] = useState("")
   const [jsonData, setJsonData] = useState("")
   const [isProcessing, setIsProcessing] = useState(false)
@@ -33,6 +45,8 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
   const [broker, setBroker] = useState<"exness" | "fidelity">("exness")
   const [stopDistancePercent, setStopDistancePercent] = useState("")
   const [fidelityWarnings, setFidelityWarnings] = useState<string[]>([])
+  const [accountId, setAccountId] = useState<string>(defaultAccountId || (accounts.length > 0 ? accounts[0].id : ""))
+  const [conflictCount, setConflictCount] = useState(0)
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>, type: "csv" | "json") => {
     const file = event.target.files?.[0]
@@ -235,24 +249,20 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
 
   const checkForDuplicates = (
     newTrades: Omit<Trade, "id">[],
-  ): { trades: Omit<Trade, "id">[]; duplicates: string[] } => {
-    const duplicateTickets: string[] = []
-    const uniqueTrades: Omit<Trade, "id">[] = []
+  ): { trades: Omit<Trade, "id">[]; duplicates: string[]; conflicts: number } => {
+    const result = detectDuplicates(existingTrades, newTrades)
+    const duplicateLabels = result.duplicates.map((trade) => trade.ticket || trade.asset || "unknown")
+    return { trades: result.newTrades, duplicates: duplicateLabels, conflicts: result.conflicts.length }
+  }
 
-    newTrades.forEach((trade) => {
-      if (trade.ticket) {
-        const isDuplicate = existingTrades?.some((existing) => existing.ticket === trade.ticket)
-        if (isDuplicate) {
-          duplicateTickets.push(trade.ticket)
-        } else {
-          uniqueTrades.push(trade)
-        }
-      } else {
-        uniqueTrades.push(trade)
-      }
-    })
-
-    return { trades: uniqueTrades, duplicates: duplicateTickets }
+  const stampAccount = (trades: Omit<Trade, "id">[]): Omit<Trade, "id">[] => {
+    const targetAccountId = accountId || undefined
+    return trades.map((trade) =>
+      applyStopInfo({
+        ...trade,
+        ...(targetAccountId ? { accountId: targetAccountId } : {}),
+      } as Omit<Trade, "id">),
+    )
   }
 
   const processExnessCSV = () => {
@@ -267,17 +277,19 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
       }
     })
 
-    const { trades: uniqueTrades, duplicates: foundDuplicates } = checkForDuplicates(convertedTrades)
+    const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(convertedTrades)
 
     setFidelityWarnings([])
-    setPreviewTrades(uniqueTrades)
+    setPreviewTrades(stampAccount(uniqueTrades))
     setDuplicates(foundDuplicates)
+    setConflictCount(conflicts)
 
     console.log("=== IMPORT SUMMARY (Exness) ===")
     console.log("Total CSV rows processed:", brokerTrades.length)
     console.log("Successfully converted trades:", convertedTrades.length)
     console.log("Unique trades after duplicate check:", uniqueTrades.length)
     console.log("Duplicates found:", foundDuplicates.length)
+    console.log("Conflicts skipped:", conflicts)
     console.log("======================")
 
     if (foundDuplicates.length > 0) {
@@ -326,11 +338,12 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
       })
     )
 
-    const { trades: uniqueTrades, duplicates: foundDuplicates } = checkForDuplicates(convertedTrades)
+    const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(convertedTrades)
 
     setFidelityWarnings(warnings)
-    setPreviewTrades(uniqueTrades)
+    setPreviewTrades(stampAccount(uniqueTrades))
     setDuplicates(foundDuplicates)
+    setConflictCount(conflicts)
 
     console.log("=== IMPORT SUMMARY (Fidelity) ===")
     console.log("Executions parsed:", result.executions.length)
@@ -386,9 +399,10 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
         throw new Error("Invalid JSON format")
       }
 
-      const { trades: uniqueTrades, duplicates: foundDuplicates } = checkForDuplicates(trades)
-      setPreviewTrades(uniqueTrades)
+      const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(trades)
+      setPreviewTrades(stampAccount(uniqueTrades))
       setDuplicates(foundDuplicates)
+      setConflictCount(conflicts)
     } catch (error) {
       console.error("Error processing JSON:", error)
       alert("Error processing JSON. Please check the format.")
@@ -475,6 +489,28 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
             </TabsList>
 
             <TabsContent value="csv" className="space-y-6">
+              {/* Account Selection */}
+              {accounts.length > 0 && (
+                <div>
+                  <Label htmlFor="import-account">Import into Account</Label>
+                  <Select value={accountId} onValueChange={setAccountId}>
+                    <SelectTrigger id="import-account" className="mt-1">
+                      <SelectValue placeholder="Select account" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accounts.map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    All imported trades will be assigned to this account. Duplicate detection is account-aware.
+                  </p>
+                </div>
+              )}
+
               {/* Broker Selection */}
               <div>
                 <Label htmlFor="broker">Broker CSV Format</Label>
@@ -647,15 +683,29 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
                 <span className="font-medium">Duplicate Trades Found</span>
               </div>
               <p className="text-sm text-yellow-700 mb-2">
-                {duplicates.length} trades with existing ticket IDs were skipped:
+                {duplicates.length} trades matching existing records (same account) were skipped:
               </p>
               <div className="flex flex-wrap gap-1">
-                {duplicates.map((ticket) => (
-                  <span key={ticket} className="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded">
+                {duplicates.map((ticket, index) => (
+                  <span key={`${ticket}-${index}`} className="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded">
                     {ticket}
                   </span>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Conflicts Warning */}
+          {conflictCount > 0 && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+              <div className="flex items-center gap-2 text-red-800 mb-1">
+                <AlertTriangle className="h-4 w-4" />
+                <span className="font-medium">Conflicts Skipped</span>
+              </div>
+              <p className="text-sm text-red-700">
+                {conflictCount} trade(s) matched an existing record but had different details and were skipped to
+                protect your history.
+              </p>
             </div>
           )}
 
@@ -667,6 +717,7 @@ export function ImportDialog({ onImport, onCancel, settings, existingTrades }: I
                 {duplicates.length > 0 && (
                   <span className="text-yellow-600"> • {duplicates.length} duplicates skipped</span>
                 )}
+                {conflictCount > 0 && <span className="text-red-600"> • {conflictCount} conflicts skipped</span>}
               </h3>
               <div className="max-h-60 overflow-y-auto border rounded-lg">
                 <table className="w-full text-sm">

@@ -11,7 +11,7 @@ interface PerformanceChartProps {
 
 export function PerformanceChart({ trades }: PerformanceChartProps) {
   // Create equity curve data
-  const equityCurveData = trades
+  const equityCurveData = [...trades]
     .sort((a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime())
     .reduce(
       (acc, trade, index) => {

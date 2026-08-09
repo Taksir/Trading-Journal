@@ -15,10 +15,14 @@ import { X, DollarSign, Plus, Minus, Trash2 } from "lucide-react"
 
 // Import the type from the main types file
 import type { BalanceAdjustment } from "@/types/trade"
+import type { TradingAccount } from "@/types/account"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 interface BalanceAdjusterProps {
   currentBalance: number
   adjustments: BalanceAdjustment[]
+  accounts?: TradingAccount[]
+  defaultAccountId?: string
   onAddAdjustment: (adjustment: Omit<BalanceAdjustment, "id">) => void
   onDeleteAdjustment: (id: string) => void
   onCancel: () => void
@@ -35,7 +39,15 @@ const COMMON_REASONS = [
   "Other",
 ]
 
-export function BalanceAdjuster({ currentBalance, adjustments, onAddAdjustment, onDeleteAdjustment, onCancel }: BalanceAdjusterProps) {
+export function BalanceAdjuster({
+  currentBalance,
+  adjustments,
+  accounts = [],
+  defaultAccountId,
+  onAddAdjustment,
+  onDeleteAdjustment,
+  onCancel,
+}: BalanceAdjusterProps) {
   const [formData, setFormData] = useState({
     amount: 0,
     reason: "",
@@ -44,12 +56,14 @@ export function BalanceAdjuster({ currentBalance, adjustments, onAddAdjustment, 
     time: new Date().toTimeString().slice(0, 5),
     notes: "",
   })
+  const [accountId, setAccountId] = useState<string>(defaultAccountId || (accounts.length > 0 ? accounts[0].id : ""))
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (formData.amount <= 0) return
 
     const adjustment: Omit<BalanceAdjustment, "id"> = {
+      accountId: accountId || undefined,
       amount: formData.amount,
       reason: formData.reason || "Manual adjustment",
       type: formData.type,
@@ -138,6 +152,25 @@ export function BalanceAdjuster({ currentBalance, adjustments, onAddAdjustment, 
                     )}
                   </div>
                 </div>
+
+                {/* Account Selection */}
+                {accounts.length > 0 && (
+                  <div>
+                    <Label htmlFor="adj-account">Account</Label>
+                    <Select value={accountId} onValueChange={setAccountId}>
+                      <SelectTrigger id="adj-account" className="mt-1">
+                        <SelectValue placeholder="Select account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {accounts.map((account) => (
+                          <SelectItem key={account.id} value={account.id}>
+                            {account.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
 
                 {/* Date and Time */}
                 <div className="grid grid-cols-2 gap-4">
@@ -267,7 +300,7 @@ export function BalanceAdjuster({ currentBalance, adjustments, onAddAdjustment, 
               ) : (
                 <ScrollArea className="h-[500px] pr-4">
                   <div className="space-y-4">
-                    {adjustments
+                    {[...adjustments]
                       .sort((a, b) => {
                         const dateTimeA = new Date(`${a.date} ${a.time}`)
                         const dateTimeB = new Date(`${b.date} ${b.time}`)
@@ -290,6 +323,11 @@ export function BalanceAdjuster({ currentBalance, adjustments, onAddAdjustment, 
                                 </span>
                               </div>
                               <p className="font-medium">{adjustment.reason}</p>
+                              {adjustment.accountId && accounts.length > 0 && (
+                                <p className="text-xs text-muted-foreground">
+                                  {accounts.find((a) => a.id === adjustment.accountId)?.name || "Unknown account"}
+                                </p>
+                              )}
                               {adjustment.notes && (
                                 <p className="text-sm text-muted-foreground mt-1">{adjustment.notes}</p>
                               )}

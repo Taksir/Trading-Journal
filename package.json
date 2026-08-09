@@ -8,7 +8,8 @@
     "lint": "next lint",
     "start": "next start",
     "test:fidelity": "node scripts/test-fidelity-parser.mts",
-    "test:quant": "node scripts/test-quant-metrics.mts"
+    "test:quant": "node scripts/test-quant-metrics.mts",
+    "test:accounts": "node scripts/test-accounts.mts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
@@ -50,6 +51,7 @@
     "next-themes": "^0.4.4",
     "react": "^19",
     "react-dom": "^19",
+    "react-day-picker": "8.10.1",
     "react-hook-form": "^7.54.1",
     "react-is": "^19.1.0",
     "react-markdown": "^10.1.0",
@@ -58,6 +60,7 @@
     "sonner": "^1.7.1",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
+    "vaul": "^0.9.6",
     "zod": "^3.24.1"
   },
   "devDependencies": {

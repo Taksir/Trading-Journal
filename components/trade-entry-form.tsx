@@ -4,9 +4,11 @@ import React, { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { X, Calculator } from "lucide-react"
-import type { Trade, Settings } from "@/types/trade"
+import type { Trade, Settings, ManualSetupGrade } from "@/types/trade"
 import { BasicInfoSection } from "./trade-form/basic-info-section"
 import { TradeDetailsSection } from "./trade-form/trade-details-section"
 import { PriceLevelsSection } from "./trade-form/price-levels-section"
@@ -17,12 +19,17 @@ import { JournalEditor } from "./journal-editor"
 import { getTradingSession, getDayOfWeek, DEFAULT_TRADING_SESSIONS } from "@/utils/trading-sessions"
 import { BrokerPasteInput } from "./broker-paste-input"
 import { getGradeRiskMultiplier, calculateGradeAdjustedRisk } from "@/lib/utils"
+import type { TradingAccount } from "@/types/account"
+import { DEFAULT_SETUPS } from "@/types/setup"
+import { applyStopInfo } from "@/utils/trade-review"
 
 interface TradeEntryFormProps {
   onSubmit: (trade: Omit<Trade, "id">) => void
   onCancel: () => void
   initialData?: Trade
   settings: Settings
+  accounts?: TradingAccount[]
+  defaultAccountId?: string
 }
 
 interface ParsedBrokerData {
@@ -43,7 +50,7 @@ interface ParsedBrokerData {
 
 const GRADES = ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "E", "F"]
 
-export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: TradeEntryFormProps) {
+export function TradeEntryForm({ onSubmit, onCancel, initialData, settings, accounts = [], defaultAccountId }: TradeEntryFormProps) {
   const safeTradingSystems = settings?.tradingSystems || [
     "Z-score",
     "EMT",
@@ -64,6 +71,7 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
   const availableAssets = Object.keys(safeAssetFees)
 
   const [formData, setFormData] = useState({
+    accountId: initialData?.accountId || defaultAccountId || (accounts.length > 0 ? accounts[0].id : undefined),
     date: initialData?.date || new Date().toISOString().split("T")[0],
     time: initialData?.time || new Date().toTimeString().slice(0, 5),
     endDate: initialData?.endDate || new Date().toISOString().split("T")[0],
@@ -82,9 +90,23 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
     grade: initialData?.grade || "",
     ticket: initialData?.ticket || "",
     idealRiskAmount: initialData?.idealRiskAmount || defaultIdealRisk,
+    setupId: initialData?.setupId || "",
+    manualSetupGrade: initialData?.manualSetupGrade || "",
+    tradeThesis: initialData?.tradeThesis || "",
+    reviewNotes: initialData?.reviewNotes || "",
   } as Omit<Trade, "id">)
 
   const [hasClose, setHasClose] = useState(initialData?.endDate ? true : false)
+
+  const handleHasCloseChange = (value: boolean) => {
+    setHasClose(value)
+    setFormData((prev) => ({
+      ...prev,
+      // Only fabricate close information when the trade is actually closed.
+      endDate: value ? prev.endDate || new Date().toISOString().split("T")[0] : "",
+      endTime: value ? prev.endTime || new Date().toTimeString().slice(0, 5) : "",
+    }))
+  }
 
   // Risk mode toggle state
   const [riskModeState, setRiskModeState] = useState<{
@@ -209,15 +231,32 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
     const session = getTradingSession(formData.time, tradingSessions)
     const dayOfWeek = getDayOfWeek(formData.date)
 
+    // For open trades do not fabricate close information or realized P&L.
+    // The stored pnl/fee/rMultiple/expectedR are set to 0 so open positions
+    // never appear as wins/losses/breakevens in realized metrics.
+    const isClosed = hasClose && formData.endDate
+
     const trade: Omit<Trade, "id"> = {
       ...formData,
       ...calculatedValues,
       takeProfit: 0, // Remove take profit - not used
+      endDate: isClosed ? formData.endDate : undefined,
+      endTime: isClosed ? formData.endTime : undefined,
+      pnl: isClosed ? calculatedValues.pnl : 0,
+      fee: isClosed ? calculatedValues.fee : 0,
+      rMultiple: isClosed ? calculatedValues.rMultiple : 0,
+      expectedR: isClosed ? calculatedValues.expectedR : 0,
+      outcome: isClosed ? (calculatedValues.outcome || "Breakeven") : "Breakeven",
       session: calculatedValues.session || session.name,
       dayOfWeek: calculatedValues.dayOfWeek || dayOfWeek,
+      setupId: formData.setupId || undefined,
+      manualSetupGrade: (formData.manualSetupGrade as ManualSetupGrade) || undefined,
+      tradeThesis: formData.tradeThesis || undefined,
+      reviewNotes: formData.reviewNotes || undefined,
     }
 
-    onSubmit(trade)
+    // Populate planned/inferred stop metadata from the entered stop loss.
+    onSubmit(applyStopInfo(trade))
   }
 
   const addTag = (tag: string) => {
@@ -276,6 +315,7 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
       data.fee,
     )
 
+    setHasClose(true)
     setFormData((prev) => ({
       ...prev,
       asset: data.asset,
@@ -287,9 +327,8 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
       ticket: data.ticket,
       date: data.openDate,
       time: data.openTime,
-      isClosed: true,
-      closeDate: data.closeDate,
-      closeTime: data.closeTime,
+      endDate: data.closeDate,
+      endTime: data.closeTime,
     }))
 
     // Auto-calculate with the pasted data
@@ -318,7 +357,14 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
             {/* Quick Entry from Broker */}
             {!initialData && <BrokerPasteInput onParsedData={handleBrokerPaste} />}
 
-            <BasicInfoSection formData={formData} onChange={handleFieldChange} availableAssets={availableAssets} />
+            <BasicInfoSection
+              formData={formData}
+              onChange={handleFieldChange}
+              availableAssets={availableAssets}
+              accounts={accounts}
+              hasClose={hasClose}
+              onHasCloseChange={handleHasCloseChange}
+            />
 
             <TradeDetailsSection
               formData={formData}
@@ -362,6 +408,76 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings }: Tr
                 value={formData.screenshot}
                 onChange={(e) => handleFieldChange("screenshot", e.target.value)}
               />
+            </div>
+
+            {/* Setup & Review */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold">Setup & Review</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="setupId">Setup Type</Label>
+                  <Select
+                    value={formData.setupId || "placeholder"}
+                    onValueChange={(value) => handleFieldChange("setupId", value === "placeholder" ? "" : value)}
+                  >
+                    <SelectTrigger id="setupId">
+                      <SelectValue placeholder="Select setup" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="placeholder" disabled>
+                        Select setup
+                      </SelectItem>
+                      {DEFAULT_SETUPS.map((setup) => (
+                        <SelectItem key={setup.id} value={setup.id}>
+                          {setup.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="manualSetupGrade">Manual Setup Grade</Label>
+                  <Select
+                    value={formData.manualSetupGrade || "placeholder"}
+                    onValueChange={(value) =>
+                      handleFieldChange("manualSetupGrade", value === "placeholder" ? "" : value)
+                    }
+                  >
+                    <SelectTrigger id="manualSetupGrade">
+                      <SelectValue placeholder="Grade the setup" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="placeholder" disabled>
+                        Grade the setup
+                      </SelectItem>
+                      {["A+", "A", "B", "C", "D", "F"].map((grade) => (
+                        <SelectItem key={grade} value={grade}>
+                          {grade}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="md:col-span-2">
+                  <Label htmlFor="tradeThesis">Trade Thesis (pre-trade)</Label>
+                  <Input
+                    id="tradeThesis"
+                    placeholder="Why am I taking this trade? What do I expect?"
+                    value={formData.tradeThesis}
+                    onChange={(e) => handleFieldChange("tradeThesis", e.target.value)}
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <Label htmlFor="reviewNotes">Review Notes (post-trade)</Label>
+                  <Textarea
+                    id="reviewNotes"
+                    placeholder="What did I learn? Was the setup/execution clean?"
+                    value={formData.reviewNotes}
+                    onChange={(e) => handleFieldChange("reviewNotes", e.target.value)}
+                    rows={3}
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="flex gap-4 pt-4">

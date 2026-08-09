@@ -77,7 +77,7 @@ export function AnalyticsDashboard({ trades, stats, settings }: AnalyticsDashboa
   }))
 
   // Expected R equity curve data
-  const expectedREquityCurveData = trades
+  const expectedREquityCurveData = [...trades]
     .sort((a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime())
     .reduce(
       (acc, trade, index) => {
@@ -94,7 +94,7 @@ export function AnalyticsDashboard({ trades, stats, settings }: AnalyticsDashboa
     )
 
   // Account balance growth data - shows progression from initial balance
-  const sortedTrades = trades.sort((a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime())
+  const sortedTrades = [...trades].sort((a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime())
   const accountBalanceData = sortedTrades.reduce(
     (acc, trade, index) => {
       const prevBalance = index === 0 ? settings.accountBalance : acc[index - 1].balance

@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { SortButton } from "@/components/shared/sort-button"
 import { TradeActions } from "./trade-actions"
 import type { Trade } from "@/types/trade"
+import type { TradingAccount } from "@/types/account"
 import type { SortField, SortDirection } from "@/hooks/use-trade-sorting"
 
 interface TradeTableProps {
@@ -19,6 +20,7 @@ interface TradeTableProps {
   onEditTrade: (trade: Trade) => void
   onViewTrade: (trade: Trade) => void
   onDeleteTrade: (id: string) => void
+  accounts?: TradingAccount[]
 }
 
 export function TradeTable({
@@ -32,6 +34,7 @@ export function TradeTable({
   onEditTrade,
   onViewTrade,
   onDeleteTrade,
+  accounts = [],
 }: TradeTableProps) {
   const allSelected = trades.length > 0 && trades.every((trade) => selectedTrades.includes(trade.id))
   const someSelected = trades.some((trade) => selectedTrades.includes(trade.id))
@@ -81,6 +84,7 @@ export function TradeTable({
                 Asset
               </SortButton>
             </TableHead>
+            <TableHead>Account</TableHead>
             <TableHead>
               <SortButton field="system" currentSortField={sortField} sortDirection={sortDirection} onSort={onSort}>
                 System
@@ -142,6 +146,13 @@ export function TradeTable({
                 </div>
               </TableCell>
               <TableCell className="font-medium">{trade.asset}</TableCell>
+              <TableCell>
+                <Badge variant="outline">
+                  {trade.accountId
+                    ? accounts.find((account) => account.id === trade.accountId)?.name || "Unknown"
+                    : "—"}
+                </Badge>
+              </TableCell>
               <TableCell>{trade.system}</TableCell>
               {/* <TableCell>
                 <Badge variant={trade.rMultiple >= 0 ? "default" : "destructive"}>
