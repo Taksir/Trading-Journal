@@ -468,6 +468,16 @@ export function summarizeReview(trades: Trade[]): ReviewSummary {
   }
 }
 
+/**
+ * Canonical scoped "needs review" count for closed trades: partial + not-yet-
+ * started reviews. This is the single source of truth for the main-page review
+ * reminder AND the Review Queue badge, so the two always agree.
+ */
+export function getNeedsReviewCount(trades: Trade[]): number {
+  const summary = summarizeReview(trades)
+  return summary.partial + summary.needsReview
+}
+
 // ------------------------------------------------------ review-only updates
 
 /**

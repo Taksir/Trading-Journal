@@ -21,6 +21,8 @@ import { GradeAnalytics } from "@/components/features/review/grade-analytics"
 import { ProcessMistakeAnalytics } from "@/components/features/review/process-mistake-analytics"
 import { StopAdherence } from "@/components/features/review/stop-adherence"
 import { PnlCalendar } from "@/components/features/review/pnl-calendar"
+import { ReviewReminder } from "@/components/features/review/review-reminder"
+import { PnlChart } from "@/components/features/analytics/pnl-chart"
 import type { Trade, TradeStats, Settings as SettingsType, BalanceAdjustment } from "@/types/trade"
 import type { AccountScope, TradingAccount } from "@/types/account"
 import type { ReviewPatch } from "@/types/review"
@@ -61,9 +63,11 @@ import { scopeAccounts } from "@/utils/account-scope"
 import { mergeSetups, SETUPS_STORAGE_KEY } from "@/utils/setups"
 import {
   applyReviewPatch as applyReviewPatchToTrade,
+  getNeedsReviewCount,
   sortClosedTradesByCloseDate,
 } from "@/utils/review-analytics"
 import { needsReview } from "@/utils/trade-review"
+import { buildPnlChartPoints, type PnlChartPoint } from "@/utils/pnl-series"
 import {
   groupClosedTradesByCloseDate,
   toCalendarDayPoints,
@@ -73,7 +77,7 @@ import {
 const ACCOUNT_SCOPE_KEY = "trading-journal-account-scope"
 
 const DEFAULT_SETTINGS: SettingsType = {
-  accountBalance: 100,
+  accountBalance: 0,
   assetFees: {
     BTC: 16,
     ETH: 1.3,
@@ -115,6 +119,7 @@ export default function TradingJournal() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBalanceAdjuster, setShowBalanceAdjuster] = useState(false)
   const [showAccountManager, setShowAccountManager] = useState(false)
+  const [activeTab, setActiveTab] = useState("trades")
   const [reviewTarget, setReviewTarget] = useState<Trade | null>(null)
   const [detailTarget, setDetailTarget] = useState<Trade | null>(null)
   // Persistence effects no-op until load+migrate completes, so the initial
@@ -685,6 +690,25 @@ export default function TradingJournal() {
     return fallback.sort((a, b) => a.date.localeCompare(b.date))
   }, [scopedAccounts, scopedTrades, balanceAdjustments])
 
+  // Canonical scoped review count for the main-page reminder. Matches the
+  // Review Queue badge (both use getNeedsReviewCount on the same scoped trades).
+  const reviewNeedsCount = useMemo(() => getNeedsReviewCount(scopedTrades), [scopedTrades])
+
+  // P&L chart points: cumulative realized trading P&L over time for the scoped
+  // accounts (All Accounts sums realized P&L chronologically — no averaging).
+  // Daily return % rides along from the canonical account/aggregate daily series
+  // so the tooltip never uses an inconsistent return formula.
+  const pnlChartPoints = useMemo<PnlChartPoint[]>(() => {
+    const returnByDate = new Map<string, number | null>()
+    for (const point of calendarPoints) returnByDate.set(point.date, point.returnPct)
+    return buildPnlChartPoints({
+      trades: scopedTrades,
+      adjustments: scopedAdjustments,
+      startingBalance: scopedStartingBalance,
+      returnByDate,
+    })
+  }, [scopedTrades, scopedAdjustments, scopedStartingBalance, calendarPoints])
+
   // Review-only updates: merge the patch, never touch financial fields.
   const applyReviewPatch = (tradeId: string, patch: ReviewPatch) => {
     if (!guardWrite("Reviewing trades")) return
@@ -787,19 +811,15 @@ export default function TradingJournal() {
           balanceAdjustments={balanceAdjustments}
         />
 
-        {/* Review queue: prominent but not intrusive, respects the account scope */}
-        <ReviewQueue
-          trades={scopedTrades}
-          setups={setups}
-          accounts={accounts}
-          onReview={(trade) => {
-            if (guardWrite("Reviewing trades")) setReviewTarget(trade)
-          }}
-          onView={(trade) => setDetailTarget(trade)}
-        />
+        {/* Compact review reminder: jumps to the Review tab (the full Review
+            Queue lives there now). Respects the account scope. */}
+        <ReviewReminder count={reviewNeedsCount} onClick={() => setActiveTab("review")} />
+
+        {/* Interactive cumulative realized P&L chart (TradingView-style) */}
+        <PnlChart points={pnlChartPoints} />
 
         {/* Main Content */}
-        <Tabs defaultValue="trades" className="space-y-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-2 md:grid-cols-7">
             <TabsTrigger value="trades">Trades</TabsTrigger>
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
@@ -846,6 +866,15 @@ export default function TradingJournal() {
             <FeeAnalysis trades={scopedTrades} />
           </TabsContent>
           <TabsContent value="review" className="space-y-4">
+            <ReviewQueue
+              trades={scopedTrades}
+              setups={setups}
+              accounts={accounts}
+              onReview={(trade) => {
+                if (guardWrite("Reviewing trades")) setReviewTarget(trade)
+              }}
+              onView={(trade) => setDetailTarget(trade)}
+            />
             <SetupAnalytics trades={scopedTrades} setups={setups} />
             <GradeAnalytics trades={scopedTrades} />
             <ProcessMistakeAnalytics trades={scopedTrades} />

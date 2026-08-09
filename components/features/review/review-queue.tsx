@@ -10,7 +10,7 @@ import type { TradingAccount } from "@/types/account"
 import type { Trade } from "@/types/trade"
 import { getAccountName } from "@/utils/account-analytics"
 import { getReviewSignals, getReviewStatus } from "@/utils/trade-review"
-import { sortClosedTradesByCloseDate, summarizeReview } from "@/utils/review-analytics"
+import { sortClosedTradesByCloseDate, summarizeReview, getNeedsReviewCount } from "@/utils/review-analytics"
 import { isTradeClosed } from "@/utils/quant-metrics"
 
 type QueueFilter = "all" | "setup" | "grade" | "stop" | "process" | "notes"
@@ -37,6 +37,7 @@ export function ReviewQueue({ trades, setups, accounts = [], onReview, onView }:
   const [filter, setFilter] = useState<QueueFilter>("all")
 
   const summary = useMemo(() => summarizeReview(trades), [trades])
+  const totalNeedsReview = useMemo(() => getNeedsReviewCount(trades), [trades])
   const queueTrades = useMemo(() => {
     const closed = trades.filter(isTradeClosed)
     const sorted = sortClosedTradesByCloseDate(closed)
@@ -59,8 +60,6 @@ export function ReviewQueue({ trades, setups, accounts = [], onReview, onView }:
       }
     })
   }, [trades, filter])
-
-  const totalNeedsReview = summary.partial + summary.needsReview
 
   return (
     <Card>

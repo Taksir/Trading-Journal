@@ -38,7 +38,7 @@ export function buildDefaultAccount(startingBalance: number, nowIso?: string): T
   return {
     id: DEFAULT_ACCOUNT_ID,
     name: "Default Account",
-    startingBalance: isFiniteNumber(startingBalance) && startingBalance > 0 ? startingBalance : 100,
+    startingBalance: isFiniteNumber(startingBalance) && startingBalance >= 0 ? startingBalance : 0,
     currency: "USD",
     createdAt: nowIso || new Date().toISOString(),
   }

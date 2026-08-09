@@ -331,6 +331,37 @@ console.log("--- startingDate later than historical trades (inconsistent) ---")
   assert(metrics.maxDrawdownAmount !== 0, "drawdown reflects the early realized loss")
 }
 
+// ============================================================ BALANCE DEFAULTS
+
+console.log("--- balance defaults: scoped balance falls back to the account ---")
+{
+  const accA = account({ id: "acc-a", name: "A", startingBalance: 10000 })
+  const accB = account({ id: "acc-b", name: "B", startingBalance: 40000 })
+
+  // No trades, no adjustments: real balance defaults to the account's starting
+  // balance (NOT the legacy settings.accountBalance fallback).
+  assertClose(getAccountBalance(accA, [], []), 10000, "A: idle balance = its startingBalance (10000), not settings (2500)")
+  assertClose(getAccountBalance(accB, [], []), 40000, "B: idle balance = 40000")
+
+  // Scope-adjusted balance with no activity = sum of scoped starting balances.
+  assertClose(calculateScopeAdjustedBalance({ kind: "all" }, [accA, accB], [], []), 50000, "All: idle aggregate = 10000 + 40000")
+
+  const scopeA: AccountScope = { kind: "selected", accountIds: ["acc-a"] }
+  assertClose(calculateScopeAdjustedBalance(scopeA, [accA, accB], [], []), 10000, "A: idle scoped balance = 10000")
+
+  // With only flows (no trades) the default still holds + flows.
+  const deposit = adjustment({ id: "d1", accountId: "acc-a", amount: 500, type: "add", date: "2026-01-02" })
+  assertClose(getAccountBalance(accA, [], [deposit]), 10500, "A: startingBalance + deposit = 10500")
+
+  // Open trades never count toward the realized P&L default.
+  const openOnly = trade({ id: "o1", accountId: "acc-a", endDate: undefined, pnl: 9999 })
+  assertClose(getAccountBalance(accA, [openOnly], []), 10000, "A: open trade excluded -> balance stays 10000")
+
+  // The account daily series also starts from the account's own startingBalance.
+  const series = buildAccountDailySeries(accA, [], [])
+  assert(series.points.length === 0, "A: no closed trades -> empty series (default handled at balance level)")
+}
+
 // ============================================================ FILTERING
 
 console.log("--- account filtering ---")

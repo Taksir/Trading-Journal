@@ -100,9 +100,10 @@ export function getAccountAdjustmentTotal(accountId: string, adjustments: Balanc
   }, 0)
 }
 
+/** Realized net trading P&L for an account. Open trades excluded (realized only). */
 export function getAccountNetTradingPnL(accountId: string, trades: Trade[]): number {
   return (trades || []).reduce((sum, trade) => {
-    if (!trade || trade.accountId !== accountId) return sum
+    if (!trade || trade.accountId !== accountId || !isTradeClosed(trade)) return sum
     return sum + safePnl(trade)
   }, 0)
 }

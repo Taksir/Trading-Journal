@@ -37,6 +37,7 @@ import {
   calculateProcessPerformance,
   calculateSetupPerformance,
   calculateStopAdherence,
+  getNeedsReviewCount,
   getSampleSizeBand,
   SAMPLE_SIZE,
   STOP_ADHERENCE_TOLERANCE_PP,
@@ -518,6 +519,37 @@ console.log("--- daily p&l calendar ---")
   const scopeA: AccountScope = { kind: "selected", accountIds: ["acc-a"] }
   const scoped = filterTradesByScope(all, scopeA)
   assertClose(sumClosedTradePnl(scoped), 150, "calendar: account-scoped P&L 200 - 100 + 50 = 150")
+}
+
+// ============================================================ NEEDS-REVIEW COUNT INVARIANT
+
+console.log("--- needs-review count (main-page reminder invariant) ---")
+{
+  const trades = [
+    closed({ id: "n1", setupId: "setup-breakout", manualSetupGrade: "A", manualProcessFollowed: true, reviewNotes: "x", stopLoss: 95 }),
+    closed({ id: "n2", setupId: "setup-breakout", manualSetupGrade: "B", stopLoss: 95 }),
+    closed({ id: "n3", pnl: -10, stopLoss: 0 }),
+    closed({ id: "n4", setupId: "setup-breakout", stopLoss: 95 }),
+    trade({ id: "n5", endDate: undefined, pnl: 0 }),
+  ]
+
+  // The reminder count must always equal the Review Queue's tally (partial +
+  // needs-review), and both derive from the same canonical source.
+  const count = getNeedsReviewCount(trades)
+  const summary = summarizeReview(trades)
+  assert(count === summary.partial + summary.needsReview, "count: equals partial + needs-review (the Review Queue)")
+  assert(count === 3, "count: n2 + n3 + n4 = 3 (open trade excluded)")
+  assert(count === trades.filter((t) => needsReview(t)).length, "count: equals filter(needsReview) count")
+
+  const allReviewed = [
+    trades[0],
+    closed({ id: "n6", setupId: "setup-breakout", manualSetupGrade: "C", manualProcessFollowed: true, reviewNotes: "done", stopLoss: 95 }),
+  ]
+  const zero = getNeedsReviewCount(allReviewed)
+  assert(zero === 0, "count: all reviewed -> 0")
+
+  const empty = getNeedsReviewCount([])
+  assert(empty === 0, "count: no trades -> 0")
 }
 
 // ============================================================ SHARED HELPERS

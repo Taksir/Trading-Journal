@@ -24,7 +24,7 @@ interface AccountManagerProps {
   onCancel: () => void
 }
 
-const DEFAULT_STARTING_BALANCE = 100
+const DEFAULT_STARTING_BALANCE = 0
 
 export function AccountManager({
   accounts,
@@ -78,7 +78,7 @@ export function AccountManager({
           ...existing,
           name: trimmed,
           broker: broker.trim() || undefined,
-          startingBalance: startingBalance > 0 ? startingBalance : DEFAULT_STARTING_BALANCE,
+          startingBalance: Number.isFinite(startingBalance) && startingBalance >= 0 ? startingBalance : DEFAULT_STARTING_BALANCE,
           startingDate: startingDate || undefined,
           currency: currency || "USD",
           updatedAt: new Date().toISOString(),
@@ -88,7 +88,7 @@ export function AccountManager({
       onAddAccount({
         name: trimmed,
         broker: broker.trim() || undefined,
-        startingBalance: startingBalance > 0 ? startingBalance : DEFAULT_STARTING_BALANCE,
+        startingBalance: Number.isFinite(startingBalance) && startingBalance >= 0 ? startingBalance : DEFAULT_STARTING_BALANCE,
         startingDate: startingDate || undefined,
         currency: currency || "USD",
       })
