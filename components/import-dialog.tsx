@@ -18,15 +18,22 @@ import { convertFidelityRoundTripToTrade } from "@/lib/fidelity-to-trade"
 import type { TradingAccount } from "@/types/account"
 import { detectDuplicates } from "@/utils/import-dedupe"
 import { applyStopInfo } from "@/utils/trade-review"
+import { createId } from "@/utils/ids"
+import { validateNewAccountSpec, type ImportDestination, type ImportPayload } from "@/utils/import-account"
 
 interface ImportDialogProps {
-  onImport: (trades: Omit<Trade, "id">[], duplicates?: string[]) => void
+  onImport: (payload: ImportPayload) => void
   onRestoreBackup?: (backupText: string) => { ok: boolean; message: string }
   onCancel: () => void
   settings: Settings
   existingTrades: Trade[]
   accounts?: TradingAccount[]
   defaultAccountId?: string
+}
+
+const BROKER_LABEL: Record<"exness" | "fidelity", string> = {
+  fidelity: "Fidelity",
+  exness: "Exness",
 }
 
 export function ImportDialog({
@@ -43,12 +50,38 @@ export function ImportDialog({
   const [isProcessing, setIsProcessing] = useState(false)
   const [previewTrades, setPreviewTrades] = useState<Omit<Trade, "id">[]>([])
   const [duplicates, setDuplicates] = useState<string[]>([])
-  const [defaultIdealRisk, setDefaultIdealRisk] = useState(settings.defaultIdealRisk || 100)
-  const [broker, setBroker] = useState<"exness" | "fidelity">("exness")
-  const [stopDistancePercent, setStopDistancePercent] = useState("")
+  const [broker, setBroker] = useState<"exness" | "fidelity">("fidelity")
   const [fidelityWarnings, setFidelityWarnings] = useState<string[]>([])
-  const [accountId, setAccountId] = useState<string>(defaultAccountId || (accounts.length > 0 ? accounts[0].id : ""))
   const [conflictCount, setConflictCount] = useState(0)
+
+  // Destination account: "Create New Account" is the default so a fresh
+  // brokerage CSV is never silently merged into Default Account.
+  const [destinationMode, setDestinationMode] = useState<"new" | "existing">("new")
+  const [accountId, setAccountId] = useState<string>(defaultAccountId || (accounts.length > 0 ? accounts[0].id : ""))
+  const [newAccountName, setNewAccountName] = useState("")
+  const [newAccountBalance, setNewAccountBalance] = useState("")
+  const [newAccountBroker, setNewAccountBroker] = useState(BROKER_LABEL.fidelity)
+  // The accountId used by the CURRENT preview (a freshly generated id for a new
+  // account, or the selected existing account). Stored so dedupe, the summary
+  // and the final import all agree on one destination.
+  const [stagedAccountId, setStagedAccountId] = useState("")
+  const [detectedCount, setDetectedCount] = useState(0)
+
+  const newAccountSpec = {
+    name: newAccountName,
+    broker: newAccountBroker,
+    startingBalance: Number(newAccountBalance.trim() === "" ? NaN : newAccountBalance),
+    currency: "USD",
+  }
+  const newAccountValidationError = destinationMode === "new" ? validateNewAccountSpec(newAccountSpec) : null
+
+  const clearPreview = () => {
+    setPreviewTrades([])
+    setDuplicates([])
+    setConflictCount(0)
+    setStagedAccountId("")
+    setDetectedCount(0)
+  }
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>, type: "csv" | "json") => {
     const file = event.target.files?.[0]
@@ -72,10 +105,8 @@ export function ImportDialog({
       if (lines.length < 2) {
         throw new Error("CSV must have at least a header row and one data row")
       }
-      
+
       const headers = lines[0].split(",").map((h) => h.trim().replace(/"/g, ""))
-      
-      console.log("CSV Headers:", headers)
 
       return lines.slice(1).map((line, index) => {
         const values = line.split(",").map((v) => v.trim().replace(/"/g, ""))
@@ -85,7 +116,6 @@ export function ImportDialog({
           trade[header] = values[index] || ""
         })
 
-        console.log(`Trade ${index + 1}:`, trade)
         return trade as BrokerTrade
       })
     } catch (error) {
@@ -96,8 +126,6 @@ export function ImportDialog({
 
   const convertBrokerTradeToTrade = (brokerTrade: BrokerTrade): Omit<Trade, "id"> => {
     try {
-      console.log("Converting broker trade:", brokerTrade)
-      
       const openingDate = new Date(brokerTrade.opening_time_utc)
       const closingDate = new Date(brokerTrade.closing_time_utc)
 
@@ -115,7 +143,7 @@ export function ImportDialog({
       const hours = Math.floor((totalSeconds % (24 * 60 * 60)) / (60 * 60))
       const minutes = Math.floor((totalSeconds % (60 * 60)) / 60)
       const seconds = totalSeconds % 60
-      
+
       // Format duration string
       let duration = ""
       if (days > 0) duration += `${days}d `
@@ -133,21 +161,23 @@ export function ImportDialog({
       const endTime = closingDate.toTimeString().slice(0, 5)
 
       // Detect trading session and day of week
-      const tradingSessions = settings?.tradingSessions && Array.isArray(settings.tradingSessions) && settings.tradingSessions.length > 0 
-        ? settings.tradingSessions 
-        : DEFAULT_TRADING_SESSIONS
+      const tradingSessions =
+        settings?.tradingSessions && Array.isArray(settings.tradingSessions) && settings.tradingSessions.length > 0
+          ? settings.tradingSessions
+          : DEFAULT_TRADING_SESSIONS
       const session = getTradingSession(time, tradingSessions)
       const dayOfWeek = getDayOfWeek(date)
 
-      // Calculate risk amount
+      // Risk from the broker data itself (Exness exports stop_loss/lots). We do
+      // NOT fabricate an ideal risk or an ideal stop during import.
       const entryPrice = Number(brokerTrade.opening_price)
       const stopLoss = Number(brokerTrade.stop_loss)
       const positionSize = Number(brokerTrade.lots)
-      
+
       if (isNaN(entryPrice) || isNaN(stopLoss) || isNaN(positionSize)) {
         throw new Error(`Invalid numeric values in trade ${brokerTrade.ticket}`)
       }
-      
+
       const riskPerUnit = Math.abs(entryPrice - stopLoss)
       const riskAmount = riskPerUnit * positionSize
 
@@ -163,34 +193,17 @@ export function ImportDialog({
       const grossPnL = Number(brokerTrade.profit_usd) // profit_usd is the gross profit (before fees)
       const netPnL = grossPnL - fee // Calculate net profit: Gross - Fee gives net profit
       const pnl = netPnL // Store NET P&L in pnl field (what trader actually received)
-      
+
       // R-multiple should be based on the original risk (without fees) for consistency
       const rMultiple = riskAmount > 0 ? netPnL / riskAmount : 0
 
-      // Use default ideal risk for imported trades
-      const idealRiskAmount = defaultIdealRisk
+      // No ideal risk is fabricated for imports; these stay "no data" (0).
+      const idealRiskAmount = 0
+      const expectedR = 0
+      const riskDeviation = 0
 
-      // For imported trades, recalculate what the actual risk should have been
-      // The ideal stop loss should be set so that: (ideal risk - fee) = price risk
-      // This way, if stop loss is hit: price loss + fee = ideal risk
-      const idealPriceRisk = Math.max(0, idealRiskAmount - fee)
-      const tradeDirection = brokerTrade.type === "buy" ? "Long" : "Short"
-      const idealStopLoss = tradeDirection === "Long" 
-        ? entryPrice - (idealPriceRisk / positionSize)
-        : entryPrice + (idealPriceRisk / positionSize)
-
-      console.log(`Trade ${brokerTrade.ticket}: Ideal Risk: ${idealRiskAmount}, Ideal Price Risk: ${idealPriceRisk}, Ideal Stop: ${idealStopLoss.toFixed(2)}, Actual Stop: ${stopLoss}, Actual Risk: ${actualRiskAmount}`)
-
-      // Expected R should be based on ideal risk (what we wanted to risk)
-      const expectedR = idealRiskAmount > 0 ? netPnL / idealRiskAmount : 0
-      const riskDeviation = idealRiskAmount > 0 ? ((actualRiskAmount - idealRiskAmount) / idealRiskAmount) * 100 : 0
-
-      console.log(`Trade ${brokerTrade.ticket}: Expected R: ${expectedR}, R-Multiple: ${rMultiple}`)
-
-      // Determine risk status
-      const riskTolerance = settings?.riskDeviationTolerance || 10
-      const isOverRisked = Math.abs(riskDeviation) > riskTolerance && riskDeviation > 0
-      const isUnderRisked = Math.abs(riskDeviation) > riskTolerance && riskDeviation < 0
+      const isOverRisked = false
+      const isUnderRisked = false
 
       // Calculate risk percentage
       const riskPercent = (settings?.accountBalance || 0) > 0 ? (actualRiskAmount / (settings?.accountBalance || 1)) * 100 : 0
@@ -240,8 +253,7 @@ export function ImportDialog({
         session: session.name,
         dayOfWeek,
       } as Omit<Trade, "id">
-      
-      console.log("Converted trade:", convertedTrade)
+
       return convertedTrade
     } catch (error) {
       console.error("Error converting broker trade:", error)
@@ -257,17 +269,39 @@ export function ImportDialog({
     return { trades: result.newTrades, duplicates: duplicateLabels, conflicts: result.conflicts.length }
   }
 
-  const stampAccount = (trades: Omit<Trade, "id">[]): Omit<Trade, "id">[] => {
-    const targetAccountId = accountId || undefined
-    return trades.map((trade) =>
+  // Stamp the destination accountId BEFORE duplicate detection so dedupe is
+  // account-aware (same trade in a different account is NOT a duplicate).
+  // applyStopInfo is the canonical trade-review stop logic (inferred stops for
+  // closed losing trades without a manual stop); it never invents risk values.
+  const stampAccount = (trades: Omit<Trade, "id">[], targetAccountId: string): Omit<Trade, "id">[] =>
+    trades.map((trade) =>
       applyStopInfo({
         ...trade,
-        ...(targetAccountId ? { accountId: targetAccountId } : {}),
+        accountId: targetAccountId,
       } as Omit<Trade, "id">),
     )
+
+  // Resolve the destination accountId for the current preview. For a new
+  // account this generates a fresh stable id and validates the name/balance
+  // FIRST, so a malformed destination never produces a preview (and thus never
+  // an account). Blocks with a message when no valid destination is chosen.
+  const resolveTargetAccountId = (): string | null => {
+    if (destinationMode === "new") {
+      const error = validateNewAccountSpec(newAccountSpec)
+      if (error) {
+        alert(error)
+        return null
+      }
+      return createId()
+    }
+    if (!accountId) {
+      alert("Select an account to import into, or choose Create New Account.")
+      return null
+    }
+    return accountId
   }
 
-  const processExnessCSV = () => {
+  const processExnessCSV = (targetAccountId: string) => {
     const brokerTrades = parseBrokerCSV(csvData)
     const convertedTrades = brokerTrades.map((trade, index) => {
       try {
@@ -280,30 +314,19 @@ export function ImportDialog({
     })
 
     const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(
-      stampAccount(convertedTrades),
+      stampAccount(convertedTrades, targetAccountId),
     )
 
     setFidelityWarnings([])
+    setStagedAccountId(targetAccountId)
+    setDetectedCount(convertedTrades.length)
     setPreviewTrades(uniqueTrades)
     setDuplicates(foundDuplicates)
     setConflictCount(conflicts)
-
-    console.log("=== IMPORT SUMMARY (Exness) ===")
-    console.log("Total CSV rows processed:", brokerTrades.length)
-    console.log("Successfully converted trades:", convertedTrades.length)
-    console.log("Unique trades after duplicate check:", uniqueTrades.length)
-    console.log("Duplicates found:", foundDuplicates.length)
-    console.log("Conflicts skipped:", conflicts)
-    console.log("======================")
-
-    if (foundDuplicates.length > 0) {
-      alert(`Found ${foundDuplicates.length} duplicate trades that will be skipped: ${foundDuplicates.join(", ")}`)
-    }
   }
 
-  const processFidelityCSV = () => {
+  const processFidelityCSV = (targetAccountId: string) => {
     const result = parseFidelityCsv(csvData)
-    const stopPct = stopDistancePercent ? Number(stopDistancePercent) : undefined
 
     const warnings: string[] = []
     if (result.skippedRows > 0) {
@@ -328,56 +351,36 @@ export function ImportDialog({
           .join(", ")}`
       )
     }
-    if (!stopPct || stopPct <= 0) {
-      warnings.push(
-        "No stop distance % was provided, so R-multiple and risk % will be 0 until you set a stop loss on each trade."
-      )
-    }
 
     const convertedTrades = result.roundTrips.map((roundTrip) =>
-      convertFidelityRoundTripToTrade(roundTrip, {
-        settings,
-        defaultIdealRisk,
-        stopDistancePercent: stopPct,
-      })
+      convertFidelityRoundTripToTrade(roundTrip, { settings })
     )
 
     const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(
-      stampAccount(convertedTrades),
+      stampAccount(convertedTrades, targetAccountId),
     )
 
     setFidelityWarnings(warnings)
+    setStagedAccountId(targetAccountId)
+    setDetectedCount(convertedTrades.length)
     setPreviewTrades(uniqueTrades)
     setDuplicates(foundDuplicates)
     setConflictCount(conflicts)
-
-    console.log("=== IMPORT SUMMARY (Fidelity) ===")
-    console.log("Executions parsed:", result.executions.length)
-    console.log("Round trips created:", result.roundTrips.length)
-    console.log("Non-trade rows skipped:", result.skippedRows)
-    console.log("Option rows skipped:", result.optionRows)
-    console.log("Open positions:", result.openPositions.length)
-    console.log("Unmatched sells:", result.unmatchedSells.length)
-    console.log("Unique trades after duplicate check:", uniqueTrades.length)
-    console.log("======================")
-
-    if (foundDuplicates.length > 0) {
-      alert(`Found ${foundDuplicates.length} duplicate trades that will be skipped: ${foundDuplicates.join(", ")}`)
-    }
   }
 
   const processCSV = () => {
     if (!csvData.trim()) return
 
+    const targetAccountId = resolveTargetAccountId()
+    if (!targetAccountId) return
+
     setIsProcessing(true)
 
     try {
-      console.log("Processing CSV data:", csvData.substring(0, 200) + "...")
-
       if (broker === "fidelity") {
-        processFidelityCSV()
+        processFidelityCSV(targetAccountId)
       } else {
-        processExnessCSV()
+        processExnessCSV(targetAccountId)
       }
     } catch (error) {
       console.error("Error processing CSV:", error)
@@ -404,9 +407,7 @@ export function ImportDialog({
           const result = onRestoreBackup(jsonData)
           alert(result.message)
           if (result.ok) {
-            setPreviewTrades([])
-            setDuplicates([])
-            setConflictCount(0)
+            clearPreview()
             setJsonData("")
           }
           return
@@ -424,9 +425,14 @@ export function ImportDialog({
         throw new Error("Invalid JSON format")
       }
 
+      const targetAccountId = resolveTargetAccountId()
+      if (!targetAccountId) return
+
       const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(
-        stampAccount(trades),
+        stampAccount(trades, targetAccountId),
       )
+      setStagedAccountId(targetAccountId)
+      setDetectedCount(trades.length)
       setPreviewTrades(uniqueTrades)
       setDuplicates(foundDuplicates)
       setConflictCount(conflicts)
@@ -439,10 +445,41 @@ export function ImportDialog({
   }
 
   const handleImport = () => {
-    if (previewTrades.length > 0) {
-      onImport(previewTrades, duplicates)
+    if (previewTrades.length === 0 || !stagedAccountId) return
+    if (destinationMode === "new" && newAccountValidationError) {
+      alert(newAccountValidationError)
+      return
     }
+
+    const destination: ImportDestination =
+      destinationMode === "new"
+        ? { kind: "new", accountId: stagedAccountId, spec: newAccountSpec }
+        : { kind: "existing", accountId: stagedAccountId }
+
+    onImport({ trades: previewTrades, duplicates, destination })
   }
+
+  const handleBrokerChange = (value: string) => {
+    setBroker(value as "exness" | "fidelity")
+    setNewAccountBroker(BROKER_LABEL[value as "exness" | "fidelity"])
+    setFidelityWarnings([])
+    clearPreview()
+  }
+
+  const handleAccountSelect = (value: string) => {
+    if (value === "new") {
+      setDestinationMode("new")
+    } else {
+      setDestinationMode("existing")
+      setAccountId(value)
+    }
+    clearPreview()
+  }
+
+  const destinationName =
+    destinationMode === "existing"
+      ? accounts.find((a) => a.id === stagedAccountId)?.name || accounts.find((a) => a.id === accountId)?.name || ""
+      : newAccountName.trim() || "New Account"
 
   const exportSampleJSON = () => {
     const sampleTrade = {
@@ -509,6 +546,76 @@ export function ImportDialog({
         </CardHeader>
 
         <CardContent className="space-y-6">
+          {/* Account Destination — shared by CSV and legacy JSON imports */}
+          <div>
+            <Label htmlFor="import-account">Account</Label>
+            <Select
+              value={destinationMode === "existing" ? accountId : "new"}
+              onValueChange={handleAccountSelect}
+            >
+              <SelectTrigger id="import-account" className="mt-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="new">Create New Account</SelectItem>
+                {accounts.map((account) => (
+                  <SelectItem key={account.id} value={account.id}>
+                    {account.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground mt-1">
+              Choose an existing account or create a new one, so this CSV is never silently merged into Default
+              Account. Duplicate detection is account-aware: the same trade in a different account is not a
+              duplicate.
+            </p>
+          </div>
+
+          {/* New Account Fields */}
+          {destinationMode === "new" && (
+            <>
+              <div>
+                <Label htmlFor="new-account-name">Account Name</Label>
+                <Input
+                  id="new-account-name"
+                  value={newAccountName}
+                  onChange={(e) => setNewAccountName(e.target.value)}
+                  placeholder="e.g. Fidelity Main"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="new-account-balance">Starting Balance</Label>
+                <div className="relative mt-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                  <Input
+                    id="new-account-balance"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={newAccountBalance}
+                    onChange={(e) => setNewAccountBalance(e.target.value)}
+                    placeholder="50000"
+                    className="pl-7"
+                  />
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Account equity before the earliest imported trade. This is not counted as profit or a deposit.
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="new-account-broker">Broker</Label>
+                <Input
+                  id="new-account-broker"
+                  value={newAccountBroker}
+                  onChange={(e) => setNewAccountBroker(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+            </>
+          )}
+
           <Tabs defaultValue="csv" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="csv">CSV Import</TabsTrigger>
@@ -516,46 +623,16 @@ export function ImportDialog({
             </TabsList>
 
             <TabsContent value="csv" className="space-y-6">
-              {/* Account Selection */}
-              {accounts.length > 0 && (
-                <div>
-                  <Label htmlFor="import-account">Import into Account</Label>
-                  <Select value={accountId} onValueChange={setAccountId}>
-                    <SelectTrigger id="import-account" className="mt-1">
-                      <SelectValue placeholder="Select account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts.map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {account.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    All imported trades will be assigned to this account. Duplicate detection is account-aware.
-                  </p>
-                </div>
-              )}
-
               {/* Broker Selection */}
               <div>
-                <Label htmlFor="broker">Broker CSV Format</Label>
-                <Select
-                  value={broker}
-                  onValueChange={(value) => {
-                    setBroker(value as "exness" | "fidelity")
-                    setFidelityWarnings([])
-                    setPreviewTrades([])
-                    setDuplicates([])
-                  }}
-                >
+                <Label htmlFor="broker">Broker</Label>
+                <Select value={broker} onValueChange={handleBrokerChange}>
                   <SelectTrigger id="broker" className="mt-1">
-                    <SelectValue placeholder="Select broker" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="exness">Exness.com (Forex/Crypto)</SelectItem>
                     <SelectItem value="fidelity">Fidelity (Stocks/ETFs)</SelectItem>
+                    <SelectItem value="exness">Exness.com (Forex/Crypto)</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-sm text-muted-foreground mt-1">
@@ -564,43 +641,6 @@ export function ImportDialog({
                     : "Exness: broker statement export (opening_time_utc, lots, symbol, profit_usd, etc.)."}
                 </p>
               </div>
-
-              {/* Default Ideal Risk Setting */}
-              <div>
-                <Label htmlFor="defaultIdealRisk">Default Ideal Risk Amount ($)</Label>
-                <Input
-                  id="defaultIdealRisk"
-                  type="number"
-                  step="0.01"
-                  value={defaultIdealRisk}
-                  onChange={(e) => setDefaultIdealRisk(Number(e.target.value))}
-                  className="mt-1"
-                />
-                <p className="text-sm text-muted-foreground mt-1">
-                  This will be used as the ideal risk amount for all imported trades
-                </p>
-              </div>
-
-              {/* Fidelity Stop Distance Setting */}
-              {broker === "fidelity" && (
-                <div>
-                  <Label htmlFor="stopDistancePercent">Default Stop Loss Distance (% from entry)</Label>
-                  <Input
-                    id="stopDistancePercent"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    placeholder="e.g. 2 for 2% (optional)"
-                    value={stopDistancePercent}
-                    onChange={(e) => setStopDistancePercent(e.target.value)}
-                    className="mt-1"
-                  />
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Fidelity exports do not include stop losses. Enter the stop distance you typically use so risk
-                    metrics (R-multiple, risk %) are calculated. You can still edit each trade afterwards.
-                  </p>
-                </div>
-              )}
 
               {/* File Upload */}
               <div>
@@ -660,7 +700,7 @@ export function ImportDialog({
                 <p className="text-sm text-blue-700 mb-3">
                   JSON is the full-fidelity backup format: "Export All" writes a versioned backup (accounts, setups,
                   trades, balance adjustments, settings, scope) that can be restored here to replace all current data.
-                  Legacy trade-only JSON files are still imported as new trades.
+                  Legacy trade-only JSON files are still imported as new trades into the selected account.
                 </p>
                 <Button onClick={exportSampleJSON} variant="outline" size="sm" className="gap-2 bg-transparent">
                   <Download className="h-4 w-4" />
@@ -702,6 +742,34 @@ export function ImportDialog({
               </div>
             </TabsContent>
           </Tabs>
+
+          {/* Import Summary */}
+          {(previewTrades.length > 0 || detectedCount > 0) && (
+            <div className="p-4 border rounded-lg">
+              <h3 className="font-semibold mb-3">Import Summary</h3>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <dt className="text-muted-foreground">Broker</dt>
+                <dd>{BROKER_LABEL[broker]}</dd>
+                <dt className="text-muted-foreground">Destination</dt>
+                <dd>
+                  {destinationName}
+                  {destinationMode === "new" && <span className="text-blue-600"> (New Account)</span>}
+                </dd>
+                {destinationMode === "new" && (
+                  <>
+                    <dt className="text-muted-foreground">Starting Balance</dt>
+                    <dd>${Number.isFinite(newAccountSpec.startingBalance) ? newAccountSpec.startingBalance.toLocaleString() : "—"}</dd>
+                  </>
+                )}
+                <dt className="text-muted-foreground">Trades detected</dt>
+                <dd>{detectedCount}</dd>
+                <dt className="text-muted-foreground">New</dt>
+                <dd>{previewTrades.length}</dd>
+                <dt className="text-muted-foreground">Duplicates skipped</dt>
+                <dd>{duplicates.length}</dd>
+              </dl>
+            </div>
+          )}
 
           {/* Duplicates Warning */}
           {duplicates.length > 0 && (
@@ -758,7 +826,6 @@ export function ImportDialog({
                       <th className="p-2 text-right">Exit</th>
                       <th className="p-2 text-right">P&L</th>
                       <th className="p-2 text-right">R</th>
-                      <th className="p-2 text-right">Expected R</th>
                       <th className="p-2 text-left">Grade</th>
                       <th className="p-2 text-left">Ticket</th>
                     </tr>
@@ -777,9 +844,6 @@ export function ImportDialog({
                         <td className={`p-2 text-right ${trade.rMultiple >= 0 ? "text-green-600" : "text-red-600"}`}>
                           {trade.rMultiple}R
                         </td>
-                        <td className={`p-2 text-right ${trade.expectedR >= 0 ? "text-green-600" : "text-red-600"}`}>
-                          {trade.expectedR.toFixed(2)}R
-                        </td>
                         <td className="p-2">{trade.grade}</td>
                         <td className="p-2">{trade.ticket}</td>
                       </tr>
@@ -795,9 +859,17 @@ export function ImportDialog({
             </div>
           )}
 
+          {destinationMode === "new" && newAccountValidationError && (
+            <p className="text-sm text-destructive">{newAccountValidationError}</p>
+          )}
+
           {/* Import Actions */}
           <div className="flex gap-4 pt-4">
-            <Button onClick={handleImport} disabled={previewTrades.length === 0} className="flex-1 gap-2">
+            <Button
+              onClick={handleImport}
+              disabled={previewTrades.length === 0 || !stagedAccountId || (destinationMode === "new" && !!newAccountValidationError)}
+              className="flex-1 gap-2"
+            >
               <Upload className="h-4 w-4" />
               Import {previewTrades.length} Trades
               {duplicates.length > 0 && <span>({duplicates.length} skipped)</span>}

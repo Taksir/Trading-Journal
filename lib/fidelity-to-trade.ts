@@ -1,12 +1,9 @@
-import type { Trade, Settings } from "@/types/trade"
-import { getTradingSession, getDayOfWeek, DEFAULT_TRADING_SESSIONS } from "@/utils/trading-sessions"
-import type { FidelityRoundTrip } from "./fidelity-parser"
+import type { Trade, Settings } from "../types/trade.ts"
+import { getTradingSession, getDayOfWeek, DEFAULT_TRADING_SESSIONS } from "../utils/trading-sessions.ts"
+import type { FidelityRoundTrip } from "./fidelity-parser.ts"
 
 export interface FidelityImportOptions {
   settings: Settings
-  defaultIdealRisk: number
-  /** Optional stop distance in percent from entry, used to derive a stop loss. */
-  stopDistancePercent?: number
 }
 
 export function formatDuration(openDate: string, openTime: string, closeDate: string, closeTime: string): string {
@@ -28,28 +25,25 @@ export function convertFidelityRoundTripToTrade(
   roundTrip: FidelityRoundTrip,
   options: FidelityImportOptions
 ): Omit<Trade, "id"> {
-  const { settings, defaultIdealRisk, stopDistancePercent } = options
+  const { settings } = options
   const tradeType: "Long" | "Short" = "Long"
 
-  let stopLoss = 0
-  if (stopDistancePercent && stopDistancePercent > 0) {
-    const factor = stopDistancePercent / 100
-    stopLoss = tradeType === "Long"
-      ? roundTrip.avgEntryPrice * (1 - factor)
-      : roundTrip.avgEntryPrice * (1 + factor)
-  }
+  // Fidelity exports carry no stop-loss data, so we do NOT fabricate a stop,
+  // an ideal risk, or an R-multiple for imported trades. Risk fields are left
+  // at 0 ("no data available") and the canonical trade-review logic
+  // (applyStopInfo) decides stop inference afterwards: a manual stop once the
+  // user edits the trade, or an inferred stop for closed losing trades.
+  const stopLoss = 0
 
-  const riskPerUnit = Math.abs(roundTrip.avgEntryPrice - stopLoss)
-  const riskAmount = riskPerUnit * roundTrip.shares
+  const riskAmount = 0
   const actualRiskAmount = riskAmount + roundTrip.fee
   const rMultiple = riskAmount > 0 ? roundTrip.pnl / riskAmount : 0
-  const idealRiskAmount = defaultIdealRisk
+  const idealRiskAmount = 0
   const expectedR = idealRiskAmount > 0 ? roundTrip.pnl / idealRiskAmount : 0
   const riskDeviation = idealRiskAmount > 0 ? ((actualRiskAmount - idealRiskAmount) / idealRiskAmount) * 100 : 0
 
-  const riskTolerance = settings?.riskDeviationTolerance || 10
-  const isOverRisked = Math.abs(riskDeviation) > riskTolerance && riskDeviation > 0
-  const isUnderRisked = Math.abs(riskDeviation) > riskTolerance && riskDeviation < 0
+  const isOverRisked = false
+  const isUnderRisked = false
 
   const balance = settings?.accountBalance || 0
   const riskPercent = balance > 0 ? (actualRiskAmount / balance) * 100 : 0
@@ -69,9 +63,7 @@ export function convertFidelityRoundTripToTrade(
   const session = getTradingSession(roundTrip.openTime, tradingSessions).name
   const dayOfWeek = getDayOfWeek(roundTrip.openDate)
 
-  const riskNote = stopDistancePercent && stopDistancePercent > 0
-    ? ""
-    : " Risk metrics need a stop loss - edit this trade to set one."
+  const riskNote = " Risk metrics need a stop loss - edit this trade to set one."
 
   return {
     date: roundTrip.openDate,

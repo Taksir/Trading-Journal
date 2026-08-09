@@ -40,6 +40,7 @@ import {
   persistMigratedJournal,
 } from "@/utils/account-migration"
 import { createId } from "@/utils/ids"
+import { prepareImport, type ImportPayload } from "@/utils/import-account"
 import {
   buildFullBackup,
   downloadFile,
@@ -421,33 +422,54 @@ export default function TradingJournal() {
     )
   }
 
-  const handleImportTrades = (importedTrades: Omit<Trade, "id">[], duplicates?: string[]) => {
+  const handleImportTrades = (payload: ImportPayload) => {
     if (!guardWrite("Importing trades")) return
-    const newTrades = importedTrades.map(trade => ({
+
+    // Resolve the destination account (existing or new), validate it, and stamp
+    // every trade with the accountId. There is NO silent Default Account
+    // fallback: an import without a valid destination is blocked here.
+    const prepared = prepareImport({
+      trades: payload.trades,
+      destination: payload.destination,
+      existingAccounts: accounts,
+    })
+    if (!prepared.ok) {
+      alert(prepared.error)
+      return
+    }
+
+    const destinationId = payload.destination.accountId
+
+    const accountName =
+      payload.destination.kind === "existing"
+        ? accounts.find((account) => account.id === payload.destination.accountId)?.name ?? "account"
+        : payload.destination.spec.name.trim()
+
+    // Create the account ONLY after parsing/validation already succeeded (the
+    // dialog never produces a preview for an unparseable file). One account,
+    // created once, referenced by every imported trade.
+    if (payload.destination.kind === "new" && prepared.account) {
+      const newAccount: TradingAccount = { ...prepared.account, createdAt: new Date().toISOString() }
+      setAccounts((prev) => [...prev, newAccount])
+    }
+
+    const newTrades = prepared.trades.map((trade) => ({
       ...trade,
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9)
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
     }))
 
-    if (duplicates && duplicates.length > 0) {
-      alert(`${duplicates.length} duplicate trades were skipped based on ticket numbers.`)
-    }
-
     setTrades((prev) => [...newTrades, ...prev])
-    setShowImportDialog(false)
-  }
 
-  const handleImportData = (data: any) => {
-    if (!guardWrite("Importing data")) return
-    if (data.trades) {
-      handleImportTrades(data.trades)
-    }
-    if (data.settings) {
-      setSettings({ ...DEFAULT_SETTINGS, ...data.settings })
-    }
-    if (data.balanceAdjustments) {
-      setBalanceAdjustments(data.balanceAdjustments)
-    }
+    // Jump the global scope to the destination so the freshly imported history
+    // is immediately visible in balances, returns, drawdown and the trade table.
+    setSelectedAccountScope({ kind: "selected", accountIds: [destinationId] })
     setShowImportDialog(false)
+
+    const dupMessage =
+      payload.duplicates.length > 0
+        ? ` ${payload.duplicates.length} duplicate${payload.duplicates.length === 1 ? "" : "s"} skipped.`
+        : ""
+    alert(`Imported ${newTrades.length} trade${newTrades.length === 1 ? "" : "s"} into ${accountName}.${dupMessage}`)
   }
 
   const exportAllData = () => {
