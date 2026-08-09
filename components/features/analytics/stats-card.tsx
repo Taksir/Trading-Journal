@@ -1,6 +1,7 @@
 "use client"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface StatsCardProps {
   title: string
@@ -8,9 +9,10 @@ interface StatsCardProps {
   icon: React.ReactNode
   trend?: "positive" | "negative" | "neutral"
   description?: string
+  tooltip?: string
 }
 
-export function StatsCard({ title, value, icon, trend = "neutral", description }: StatsCardProps) {
+export function StatsCard({ title, value, icon, trend = "neutral", description, tooltip }: StatsCardProps) {
   const getTrendColor = () => {
     switch (trend) {
       case "positive":
@@ -25,7 +27,18 @@ export function StatsCard({ title, value, icon, trend = "neutral", description }
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        <CardTitle className="text-sm font-medium">
+          {tooltip ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-help border-b border-dotted border-muted-foreground/40">{title}</span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{tooltip}</TooltipContent>
+            </Tooltip>
+          ) : (
+            title
+          )}
+        </CardTitle>
         <div className={getTrendColor()}>{icon}</div>
       </CardHeader>
       <CardContent>

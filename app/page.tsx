@@ -3,8 +3,7 @@
 import { useState, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Plus, TrendingUp, TrendingDown, Target, DollarSign, Upload, Download, Settings } from "lucide-react"
+import { Plus, DollarSign, Upload, Download, Settings } from "lucide-react"
 import { TradeEntryForm, TradesList, AnalyticsDashboard } from "@/components/index"
 import { AdvancedAnalytics } from "@/components/advanced-analytics"
 import { SessionAnalytics } from "@/components/session-analytics"
@@ -14,6 +13,8 @@ import { ImportDialog } from "@/components/import-dialog"
 import { BalanceAdjuster } from "@/components/balance-adjuster"
 import type { Trade, TradeStats, Settings as SettingsType, BalanceAdjustment } from "@/types/trade"
 import { recalculateTradeMetrics } from "@/utils/trade-calculations"
+import { calculateAdjustedAccountBalance, calculateNetTradingPnL } from "@/utils/quant-metrics"
+import { QuantMetricsGrid } from "@/components/features/analytics/quant-metrics-grid"
 import { FeeAnalysis } from "@/components/fee-analysis"
 
 const DEFAULT_SETTINGS: SettingsType = {
@@ -296,11 +297,8 @@ export default function TradingJournal() {
   const stats = calculateStats()
 
   // Calculate adjusted account balance
-  const balanceAdjustmentTotal = balanceAdjustments.reduce((sum, adj) => {
-    return sum + (adj.type === "add" ? adj.amount : -adj.amount)
-  }, 0)
-  const netTradingPnL = stats.totalPnL // stats.totalPnL contains net P&L
-  const adjustedAccountBalance = settings.accountBalance + balanceAdjustmentTotal + netTradingPnL
+  const netTradingPnL = calculateNetTradingPnL(trades) // stats.totalPnL contains net P&L
+  const adjustedAccountBalance = calculateAdjustedAccountBalance(trades, settings, balanceAdjustments)
 
   return (
     <div className="min-h-screen bg-background">
@@ -334,82 +332,8 @@ export default function TradingJournal() {
           </div>
         </div>
 
-        {/* Stats Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Account Balance</CardTitle>
-              <DollarSign className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">${adjustedAccountBalance.toFixed(2)}</div>
-              <p className="text-xs text-muted-foreground">
-                {netTradingPnL >= 0 ? "+" : ""}${netTradingPnL.toFixed(2)} net P&L from trading
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Expected Value (EV)</CardTitle>
-              <Target className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className={`text-2xl font-bold ${stats.expectedValue >= 0 ? "text-green-600" : "text-red-600"}`}>
-                {stats.expectedValue.toFixed(3)}R
-              </div>
-              <p className="text-xs text-muted-foreground">Average expected return per trade</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Win Rate</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.winRate.toFixed(1)}%</div>
-              <p className="text-xs text-muted-foreground">
-                {stats.winningTrades}W / {stats.losingTrades}L
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Expected R</CardTitle>
-              <Target className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className={`text-2xl font-bold ${stats.totalExpectedR >= 0 ? "text-green-600" : "text-red-600"}`}>
-                {stats.totalExpectedR.toFixed(1)}R
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Cumulative expected return based on actual risk
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Trades</CardTitle>
-              <TrendingDown className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.totalTrades}</div>
-              <p className="text-xs text-muted-foreground">
-                Risk Management:{" "}
-                {stats.totalTrades > 0
-                  ? (
-                    ((stats.totalTrades - stats.overRiskedTrades - stats.underRiskedTrades) / stats.totalTrades) *
-                    100
-                  ).toFixed(0)
-                  : 0}
-                % good
-              </p>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Quantitative Performance Overview */}
+        <QuantMetricsGrid trades={trades} settings={settings} balanceAdjustments={balanceAdjustments} />
 
         {/* Main Content */}
         <Tabs defaultValue="trades" className="space-y-6">

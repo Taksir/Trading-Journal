@@ -39,6 +39,7 @@ export { PaginationControls } from "./shared/pagination-controls"
 export { StatsCard } from "./features/analytics/stats-card"
 export { PerformanceChart } from "./features/analytics/performance-chart"
 export { SystemAnalysis } from "./features/analytics/system-analysis"
+export { QuantMetricsGrid } from "./features/analytics/quant-metrics-grid"
 
 // ==========================================
 // MODULAR TRADE FORM COMPONENTS
