@@ -9,7 +9,10 @@
     "start": "next start",
     "test:fidelity": "node scripts/test-fidelity-parser.mts",
     "test:quant": "node scripts/test-quant-metrics.mts",
-    "test:accounts": "node scripts/test-accounts.mts"
+    "test:accounts": "node scripts/test-accounts.mts",
+    "test:review": "node scripts/test-review.mts",
+    "test:backup": "node scripts/test-backup.mts",
+    "test:migration": "node scripts/test-migration.mts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

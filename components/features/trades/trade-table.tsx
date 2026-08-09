@@ -5,8 +5,11 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { SortButton } from "@/components/shared/sort-button"
 import { TradeActions } from "./trade-actions"
+import { ReviewStatusBadge, ProcessBadge } from "../review/review-badges"
+import { getSetupName } from "@/utils/setups"
 import type { Trade } from "@/types/trade"
 import type { TradingAccount } from "@/types/account"
+import type { Setup } from "@/types/setup"
 import type { SortField, SortDirection } from "@/hooks/use-trade-sorting"
 
 interface TradeTableProps {
@@ -21,6 +24,7 @@ interface TradeTableProps {
   onViewTrade: (trade: Trade) => void
   onDeleteTrade: (id: string) => void
   accounts?: TradingAccount[]
+  setups?: Setup[]
 }
 
 export function TradeTable({
@@ -35,6 +39,7 @@ export function TradeTable({
   onViewTrade,
   onDeleteTrade,
   accounts = [],
+  setups = [],
 }: TradeTableProps) {
   const allSelected = trades.length > 0 && trades.every((trade) => selectedTrades.includes(trade.id))
   const someSelected = trades.some((trade) => selectedTrades.includes(trade.id))
@@ -86,6 +91,11 @@ export function TradeTable({
             </TableHead>
             <TableHead>Account</TableHead>
             <TableHead>
+              <SortButton field="setupId" currentSortField={sortField} sortDirection={sortDirection} onSort={onSort}>
+                Setup
+              </SortButton>
+            </TableHead>
+            <TableHead>
               <SortButton field="system" currentSortField={sortField} sortDirection={sortDirection} onSort={onSort}>
                 System
               </SortButton>
@@ -120,6 +130,8 @@ export function TradeTable({
                 Outcome
               </SortButton>
             </TableHead>
+            <TableHead>Review</TableHead>
+            <TableHead>Process</TableHead>
             <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -152,6 +164,11 @@ export function TradeTable({
                     ? accounts.find((account) => account.id === trade.accountId)?.name || "Unknown"
                     : "—"}
                 </Badge>
+              </TableCell>
+              <TableCell>
+                {getSetupName(setups, trade.setupId) || (
+                  <span className="text-muted-foreground">—</span>
+                )}
               </TableCell>
               <TableCell>{trade.system}</TableCell>
               {/* <TableCell>
@@ -201,6 +218,12 @@ export function TradeTable({
               </TableCell>
               <TableCell>
                 <Badge variant={getOutcomeBadgeVariant(trade.outcome)}>{trade.outcome}</Badge>
+              </TableCell>
+              <TableCell>
+                <ReviewStatusBadge trade={trade} />
+              </TableCell>
+              <TableCell>
+                <ProcessBadge trade={trade} />
               </TableCell>
               <TableCell className="text-right">
                 <TradeActions

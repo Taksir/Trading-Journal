@@ -10,9 +10,16 @@ interface AnalyticsDashboardProps {
   trades: Trade[]
   stats: TradeStats
   settings: Settings
+  /**
+   * Scope-aware starting balance for the "Account Balance Growth" chart.
+   * Single account → that account's starting balance; All Accounts → sum of
+   * the scoped accounts' starting balances. Falls back to settings.accountBalance
+   * when omitted so callers that have no account model keep working.
+   */
+  startingBalance?: number
 }
 
-export function AnalyticsDashboard({ trades, stats, settings }: AnalyticsDashboardProps) {
+export function AnalyticsDashboard({ trades, stats, settings, startingBalance }: AnalyticsDashboardProps) {
   // Prepare data for charts
   const rMultipleDistribution = trades.reduce(
     (acc, trade) => {
@@ -97,7 +104,7 @@ export function AnalyticsDashboard({ trades, stats, settings }: AnalyticsDashboa
   const sortedTrades = [...trades].sort((a, b) => new Date(a.date + " " + a.time).getTime() - new Date(b.date + " " + b.time).getTime())
   const accountBalanceData = sortedTrades.reduce(
     (acc, trade, index) => {
-      const prevBalance = index === 0 ? settings.accountBalance : acc[index - 1].balance
+      const prevBalance = index === 0 ? startingBalance ?? settings.accountBalance : acc[index - 1].balance
       const newBalance = prevBalance + trade.pnl
       acc.push({
         trade: index + 1,

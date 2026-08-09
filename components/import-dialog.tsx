@@ -21,6 +21,7 @@ import { applyStopInfo } from "@/utils/trade-review"
 
 interface ImportDialogProps {
   onImport: (trades: Omit<Trade, "id">[], duplicates?: string[]) => void
+  onRestoreBackup?: (backupText: string) => { ok: boolean; message: string }
   onCancel: () => void
   settings: Settings
   existingTrades: Trade[]
@@ -30,6 +31,7 @@ interface ImportDialogProps {
 
 export function ImportDialog({
   onImport,
+  onRestoreBackup,
   onCancel,
   settings,
   existingTrades,
@@ -277,10 +279,12 @@ export function ImportDialog({
       }
     })
 
-    const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(convertedTrades)
+    const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(
+      stampAccount(convertedTrades),
+    )
 
     setFidelityWarnings([])
-    setPreviewTrades(stampAccount(uniqueTrades))
+    setPreviewTrades(uniqueTrades)
     setDuplicates(foundDuplicates)
     setConflictCount(conflicts)
 
@@ -338,10 +342,12 @@ export function ImportDialog({
       })
     )
 
-    const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(convertedTrades)
+    const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(
+      stampAccount(convertedTrades),
+    )
 
     setFidelityWarnings(warnings)
-    setPreviewTrades(stampAccount(uniqueTrades))
+    setPreviewTrades(uniqueTrades)
     setDuplicates(foundDuplicates)
     setConflictCount(conflicts)
 
@@ -389,6 +395,25 @@ export function ImportDialog({
 
     try {
       const parsedData = JSON.parse(jsonData)
+
+      // Versioned full-journal backup: route to the validated restore flow,
+      // which confirms the destructive replace and aborts atomically on any
+      // validation failure. Legacy trade exports keep the import behavior.
+      if (parsedData && typeof parsedData === "object" && parsedData.kind === "trading-journal-backup") {
+        if (onRestoreBackup) {
+          const result = onRestoreBackup(jsonData)
+          alert(result.message)
+          if (result.ok) {
+            setPreviewTrades([])
+            setDuplicates([])
+            setConflictCount(0)
+            setJsonData("")
+          }
+          return
+        }
+        throw new Error("Full journal restore is not available in this build.")
+      }
+
       let trades: Omit<Trade, "id">[] = []
 
       if (Array.isArray(parsedData)) {
@@ -399,8 +424,10 @@ export function ImportDialog({
         throw new Error("Invalid JSON format")
       }
 
-      const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(trades)
-      setPreviewTrades(stampAccount(uniqueTrades))
+      const { trades: uniqueTrades, duplicates: foundDuplicates, conflicts } = checkForDuplicates(
+        stampAccount(trades),
+      )
+      setPreviewTrades(uniqueTrades)
       setDuplicates(foundDuplicates)
       setConflictCount(conflicts)
     } catch (error) {
@@ -631,8 +658,9 @@ export function ImportDialog({
               <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
                 <h4 className="font-semibold text-blue-800 mb-2">JSON Import/Export</h4>
                 <p className="text-sm text-blue-700 mb-3">
-                  JSON format allows you to backup and restore your complete trading journal data including trades and
-                  settings.
+                  JSON is the full-fidelity backup format: "Export All" writes a versioned backup (accounts, setups,
+                  trades, balance adjustments, settings, scope) that can be restored here to replace all current data.
+                  Legacy trade-only JSON files are still imported as new trades.
                 </p>
                 <Button onClick={exportSampleJSON} variant="outline" size="sm" className="gap-2 bg-transparent">
                   <Download className="h-4 w-4" />

@@ -2,6 +2,8 @@
 
 import { useState, useMemo } from "react"
 import type { Trade, FilterOptions } from "@/types/trade"
+import { getReviewStatus } from "@/utils/trade-review"
+import { isTradeClosed } from "@/utils/quant-metrics"
 
 interface UseTradeFiltersProps {
   trades: Trade[]
@@ -60,6 +62,20 @@ export function useTradeFilters({ trades, initialFilters = {} }: UseTradeFilters
       const matchesMinPnL = allFilters.minPnL === undefined || trade.pnl >= allFilters.minPnL
       const matchesMaxPnL = allFilters.maxPnL === undefined || trade.pnl <= allFilters.maxPnL
 
+      // Review filters
+      const matchesSetup = !allFilters.setupId || trade.setupId === allFilters.setupId
+      const matchesManualGrade = !allFilters.manualGrade || trade.manualSetupGrade === allFilters.manualGrade
+      const matchesProcess =
+        !allFilters.processFollowed ||
+        (allFilters.processFollowed === "followed" && trade.manualProcessFollowed === true) ||
+        (allFilters.processFollowed === "violated" && trade.manualProcessFollowed === false)
+      const reviewStatus = !isTradeClosed(trade)
+        ? "open"
+        : getReviewStatus(trade) === "complete"
+          ? "reviewed"
+          : getReviewStatus(trade)
+      const matchesReviewStatus = !allFilters.reviewStatus || reviewStatus === allFilters.reviewStatus
+
       return (
         matchesSearch &&
         matchesSystem &&
@@ -75,7 +91,11 @@ export function useTradeFilters({ trades, initialFilters = {} }: UseTradeFilters
         matchesMinR &&
         matchesMaxR &&
         matchesMinPnL &&
-        matchesMaxPnL
+        matchesMaxPnL &&
+        matchesSetup &&
+        matchesManualGrade &&
+        matchesProcess &&
+        matchesReviewStatus
       )
     })
   }, [trades, searchTerm, allFilters])

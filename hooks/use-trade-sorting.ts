@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react"
 import type { Trade } from "@/types/trade"
 
-type SortField = "date" | "asset" | "system" | "rMultiple" | "expectedR" | "pnl" | "riskPercent" | "grade" | "outcome"
+type SortField = "date" | "asset" | "system" | "rMultiple" | "expectedR" | "pnl" | "riskPercent" | "grade" | "outcome" | "setupId"
 type SortDirection = "asc" | "desc"
 
 interface UseTradeSortingProps {

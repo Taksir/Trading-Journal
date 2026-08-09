@@ -1,4 +1,5 @@
-import type { Trade } from "../types/trade"
+import type { Trade } from "../types/trade.ts"
+import type { TradeReviewStatus } from "../types/review.ts"
 import { isTradeClosed } from "./quant-metrics.ts"
 
 /**
@@ -92,18 +93,13 @@ export function applyStopInfo<T extends Trade | Omit<Trade, "id">>(trade: T): T 
  * Whether a CLOSED trade is missing review information (groundwork for a
  * future "N trades need review" queue). Open trades are excluded.
  *
- * Criteria: no setup, no human setup grade, no planned/inferred stop, and no
- * review notes. None of these fields are mandatory — this is a convenience
- * helper only.
+ * Criteria: the trade must be fully reviewed (all review signals answered) to
+ * NOT need review. See `getReviewSignals` / `getReviewStatus` for the exact
+ * signal set. This is a convenience helper only — no field is mandatory.
  */
 export function needsReview(trade: Trade): boolean {
   if (!trade || !isTradeClosed(trade)) return false
-  if (!trade.setupId) return true
-  if (!trade.manualSetupGrade) return true
-  // A manual stop (stopLoss) or a planned/inferred pct both satisfy the stop.
-  if (getManualStopPct(trade) === null && getEffectiveStopPct(trade) === null) return true
-  if (!trade.reviewNotes) return true
-  return false
+  return getReviewStatus(trade) !== "complete"
 }
 
 /** Planned stop distance in % (manual or inferred), or null. */
@@ -113,12 +109,90 @@ export function getEffectiveStopPct(trade: Trade): number | null {
 }
 
 /**
+ * The individual review signals.
+ *
+ * - `hasStopInfo`  : any stop information exists — a manual stop OR an inferred
+ *   stop (convenience value from the realized loss). An inferred value means
+ *   the loss is at least measurable.
+ * - `hasPlannedStopRecorded` : a stop was CONSCIOUSLY planned (`stopSource`
+ *   "manual" or a manual stopLoss). An inferred stop is NOT evidence a stop was
+ *   planned — this distinction matters for stop-adherence analytics, where only
+ *   manually planned stops count.
+ * - `tradeThesis` is intentionally NOT a completion signal: imported historical
+ *   trades often predate thesis recording and are still fully reviewable.
+ */
+export interface ReviewSignals {
+  hasSetup: boolean
+  hasGrade: boolean
+  hasStopInfo: boolean
+  hasPlannedStopRecorded: boolean
+  processAnswered: boolean
+  hasReviewNotes: boolean
+}
+
+export function getReviewSignals(trade: Trade): ReviewSignals {
+  const hasSetup = Boolean(trade && trade.setupId && trade.setupId.length > 0)
+  const hasGrade = Boolean(trade && trade.manualSetupGrade)
+  const hasStopInfo = Boolean(trade && (getManualStopPct(trade) !== null || getEffectiveStopPct(trade) !== null))
+  const hasPlannedStopRecorded = Boolean(trade && (trade.stopSource === "manual" || getManualStopPct(trade) !== null))
+  const processAnswered = Boolean(
+    trade && (trade.manualProcessFollowed === true || trade.manualProcessFollowed === false),
+  )
+  const hasReviewNotes = Boolean(trade && trade.reviewNotes && trade.reviewNotes.trim().length > 0)
+  return { hasSetup, hasGrade, hasStopInfo, hasPlannedStopRecorded, processAnswered, hasReviewNotes }
+}
+
+/**
+ * Review status of a CLOSED trade:
+ * - "complete"     : all 5 signals answered (setup, grade, stop info, process, notes).
+ * - "needs-review" : none answered — nothing has been recorded yet.
+ * - "partial"      : some answered, some missing.
+ * Open trades report "needs-review" for bookkeeping but are excluded from the
+ * review queue (see `needsReview`).
+ */
+export function getReviewStatus(trade: Trade): TradeReviewStatus {
+  if (!trade || !isTradeClosed(trade)) return "needs-review"
+  const signals = getReviewSignals(trade)
+  const answered = [
+    signals.hasSetup,
+    signals.hasGrade,
+    signals.hasStopInfo,
+    signals.processAnswered,
+    signals.hasReviewNotes,
+  ].filter(Boolean).length
+  if (answered === 5) return "complete"
+  if (answered === 0) return "needs-review"
+  return "partial"
+}
+
+/** Whether a closed trade is fully reviewed (all review signals present). */
+export function isTradeReviewed(trade: Trade): boolean {
+  return getReviewStatus(trade) === "complete"
+}
+
+/**
  * "Do I systematically lose more than my planned stop?" building block:
  * returns the slippage/excess above the planned stop for a losing trade.
  * Positive means realized loss exceeds the planned stop distance.
  */
 export function getStopSlippagePct(trade: Trade): number | null {
   const planned = getEffectiveStopPct(trade)
+  const realized = getRealizedLossPct(trade)
+  if (planned === null || realized === null) return null
+  return realized - planned
+}
+
+/**
+ * Stop adherence deviation in PERCENTAGE POINTS:
+ * `abs(realizedLossPct) - abs(manualPlannedStopPct)`.
+ * Positive = realized loss was bigger than planned (worse); negative = the
+ * trade was stopped out tighter than planned (better). Only MANUALLY planned
+ * stops participate — inferred stops are circular (the realized loss defines
+ * them) and are excluded. Units are explicit: p.p. of price, not a % ratio.
+ */
+export function getStopDeviationPct(trade: Trade): number | null {
+  if (!trade || !isTradeClosed(trade)) return null
+  const planned = getManualStopPct(trade)
   const realized = getRealizedLossPct(trade)
   if (planned === null || realized === null) return null
   return realized - planned
@@ -134,7 +208,13 @@ export function isBreakeven(trade: Trade): boolean {
 }
 
 export function getReviewStatusLabel(trade: Trade): string {
-  if (!isTradeClosed(trade)) return "Open"
-  if (!needsReview(trade)) return "Reviewed"
-  return "Needs Review"
+  if (!trade || !isTradeClosed(trade)) return "Open"
+  switch (getReviewStatus(trade)) {
+    case "complete":
+      return "Reviewed"
+    case "partial":
+      return "Partial"
+    default:
+      return "Needs Review"
+  }
 }

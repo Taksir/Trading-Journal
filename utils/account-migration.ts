@@ -19,7 +19,18 @@ import type { BalanceAdjustment, Settings, Trade } from "@/types/trade"
  */
 
 export const DEFAULT_ACCOUNT_ID = "account-default"
-export const SCHEMA_VERSION = 2
+/**
+ * Current journal data schema version.
+ *
+ * The version is only ever WRITTEN to storage AFTER a migration has
+ * successfully constructed (and the persistence effects have flushed) the
+ * migrated data. A stored version GREATER than this one means the journal was
+ * written by a newer app build: the app must fail safely and load read-only —
+ * never rewrite, downgrade, or destructively migrate future-schema data.
+ */
+export const CURRENT_SCHEMA_VERSION = 2
+/** @deprecated Alias kept for callers of the previous name. */
+export const SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 export const ACCOUNTS_STORAGE_KEY = "trading-journal-accounts"
 export const SCHEMA_VERSION_KEY = "trading-journal-schema-version"
 
@@ -109,11 +120,61 @@ export function ensureAccountsMigration(input: MigrationInput): MigrationResult 
     accounts: nextAccounts,
     trades: nextTrades,
     balanceAdjustments: nextAdjustments,
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     didMigrate,
   }
 }
 
 export function accountHasTrades(accountId: string, trades: Trade[]): number {
   return (trades || []).filter((trade) => trade.accountId === accountId).length
+}
+
+export function accountHasAdjustments(accountId: string, adjustments: BalanceAdjustment[]): number {
+  return (adjustments || []).filter((adjustment) => adjustment.accountId === accountId).length
+}
+
+// ================================================= durable initialization
+
+export interface JournalStorage {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+export type PersistenceOutcome = "hydrated" | "future-schema-readonly" | "storage-error-readonly"
+
+/**
+ * Durable-ordering core of journal initialization.
+ *
+ * Invariant: `schemaVersion == CURRENT_SCHEMA_VERSION` in storage implies the
+ * migrated journal has ALREADY been durably written. This is enforced by
+ * writing the schema version as the FINAL write, only after every migrated
+ * entry was successfully persisted — never before it, and never when the data
+ * is only in React state.
+ *
+ * - `storedSchemaVersion > CURRENT_SCHEMA_VERSION` -> future-schema read-only.
+ *   Nothing is written at all (no rewrite or downgrade of newer data).
+ * - Otherwise persist `entries` in order. On ANY write failure the schema
+ *   version is NOT advanced, hydration is NOT unlocked, and the caller gets
+ *   `storage-error-readonly` so it can show a banner and block edits. Because
+ *   migration is idempotent, the next load simply retries.
+ */
+export function persistMigratedJournal(input: {
+  storedSchemaVersion: number | null
+  entries: { key: string; value: string }[]
+  storage: JournalStorage
+}): PersistenceOutcome {
+  if (input.storedSchemaVersion !== null && input.storedSchemaVersion > CURRENT_SCHEMA_VERSION) {
+    return "future-schema-readonly"
+  }
+  try {
+    for (const entry of input.entries) {
+      input.storage.setItem(entry.key, entry.value)
+    }
+    // FINAL durable write: the schema version only after migrated data is on disk.
+    input.storage.setItem(SCHEMA_VERSION_KEY, String(CURRENT_SCHEMA_VERSION))
+    return "hydrated"
+  } catch (error) {
+    console.error("Failed to persist migrated journal data:", error)
+    return "storage-error-readonly"
+  }
 }

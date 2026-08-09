@@ -11,12 +11,13 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { X, Plus, Trash2, AlertTriangle, Pencil } from "lucide-react"
 import type { TradingAccount } from "@/types/account"
-import type { Trade } from "@/types/trade"
-import { accountHasTrades } from "@/utils/account-migration"
+import type { BalanceAdjustment, Trade } from "@/types/trade"
+import { accountHasAdjustments, accountHasTrades } from "@/utils/account-migration"
 
 interface AccountManagerProps {
   accounts: TradingAccount[]
   trades: Trade[]
+  adjustments: BalanceAdjustment[]
   onAddAccount: (account: Omit<TradingAccount, "id" | "createdAt">) => void
   onUpdateAccount: (account: TradingAccount) => void
   onDeleteAccount: (id: string) => void
@@ -28,6 +29,7 @@ const DEFAULT_STARTING_BALANCE = 100
 export function AccountManager({
   accounts,
   trades,
+  adjustments,
   onAddAccount,
   onUpdateAccount,
   onDeleteAccount,
@@ -95,7 +97,10 @@ export function AccountManager({
   }
 
   const handleDelete = (account: TradingAccount) => {
-    if (accountHasTrades(account.id, trades) > 0) return
+    // Accounts holding financial records (trades or balance adjustments)
+    // cannot be deleted; move or remove that data first. Conservative block.
+    if (accountHasTrades(account.id, trades) > 0 || accountHasAdjustments(account.id, adjustments) > 0) return
+    if (accounts.length === 1) return
     if (confirmDeleteId === account.id) {
       onDeleteAccount(account.id)
       setConfirmDeleteId(null)
@@ -209,6 +214,14 @@ export function AccountManager({
                 <div className="space-y-3">
                   {accounts.map((account) => {
                     const tradeCount = accountHasTrades(account.id, trades)
+                    const adjustmentCount = accountHasAdjustments(account.id, adjustments)
+                    const cannotDelete = tradeCount > 0 || adjustmentCount > 0 || accounts.length === 1
+                    const blockReason =
+                      tradeCount > 0
+                        ? `${tradeCount} trade${tradeCount === 1 ? "" : "s"}`
+                        : adjustmentCount > 0
+                          ? `${adjustmentCount} balance adjustment${adjustmentCount === 1 ? "" : "s"}`
+                          : null
                     return (
                       <Card key={account.id} className="p-4">
                         <div className="flex items-center justify-between gap-3">
@@ -222,6 +235,7 @@ export function AccountManager({
                               Starting balance ${account.startingBalance.toFixed(2)}
                               {account.startingDate ? ` • since ${account.startingDate}` : ""} • {tradeCount} trade
                               {tradeCount === 1 ? "" : "s"}
+                              {adjustmentCount > 0 && ` • ${adjustmentCount} adjustment${adjustmentCount === 1 ? "" : "s"}`}
                             </p>
                           </div>
                           <div className="flex items-center gap-2">
@@ -238,11 +252,13 @@ export function AccountManager({
                               variant="ghost"
                               size="sm"
                               className="text-destructive hover:text-destructive gap-1"
-                              disabled={tradeCount > 0}
+                              disabled={cannotDelete}
                               title={
-                                tradeCount > 0
-                                  ? "Accounts with trades cannot be deleted. Move or remove its trades first."
-                                  : "Delete account"
+                                blockReason
+                                  ? `Accounts holding ${blockReason} cannot be deleted. Move or remove that data first.`
+                                  : accounts.length === 1
+                                    ? "You cannot delete the last remaining account."
+                                    : "Delete account"
                               }
                               onClick={() => handleDelete(account)}
                             >

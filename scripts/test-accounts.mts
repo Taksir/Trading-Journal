@@ -260,6 +260,77 @@ console.log("--- analytics: two accounts (A=10000, B=40000) ---")
   assertClose(ddAll.maxDrawdownPct, -100 / 52200 * 100, "aggregate drawdown pct -0.19%")
 }
 
+// ============================================ IDLE CAPITAL PARTICIPATION
+
+console.log("--- aggregate participation: idle capital is portfolio capital ---")
+{
+  // A: $10k, starts Jan 1, NO trade until March (idle during February).
+  // B: $40k, starts Jan 1, +$4k on Feb 10.
+  // C: $50k, starts March 1 -> must NOT enter the February denominator.
+  const accA = account({ id: "acc-a", name: "A", startingBalance: 10000, startingDate: "2026-01-01" })
+  const accB = account({ id: "acc-b", name: "B", startingBalance: 40000, startingDate: "2026-01-01" })
+  const accC = account({ id: "acc-c", name: "C", startingBalance: 50000, startingDate: "2026-03-01" })
+
+  const tradeB = trade({ id: "b-feb", accountId: "acc-b", date: "2026-02-10", time: "10:00", endDate: "2026-02-10", endTime: "12:00", pnl: 4000 })
+  const tradeA = trade({ id: "a-mar", accountId: "acc-a", date: "2026-03-05", time: "10:00", endDate: "2026-03-05", endTime: "12:00", pnl: 500 })
+  const tradeC = trade({ id: "c-mar", accountId: "acc-c", date: "2026-03-10", time: "10:00", endDate: "2026-03-10", endTime: "12:00", pnl: 1000 })
+  const allTrades = [tradeA, tradeB, tradeC]
+
+  const aggregate = buildAggregateDailySeries([accA, accB, accC], allTrades, [])
+  const feb10 = aggregate.points.find((point) => point.date === "2026-02-10")
+
+  assert(feb10 !== undefined, "aggregate series includes Feb 10")
+  if (feb10) {
+    assertClose(feb10.returnPct, 8, "Feb 10 return = 4000/50000 = 8% (idle A counts in the denominator)")
+    assert(Math.abs(feb10.returnPct - 10) > 0.1, "Feb 10 return is NOT 10% (4000/40000)")
+    assertClose(feb10.tradingEquityStart, 50000, "Feb 10 denominator = A(10000) + B(40000) = 50000")
+  }
+  assertClose(aggregate.points[0].tradingEquityStart, 50000, "series starts Jan 1 with A+B capital (C absent)")
+  assertClose(aggregate.points[0].realizedPnl, 0, "no realized P&L until Feb 10")
+
+  // C enters only from March 1.
+  const mar1 = aggregate.points.find((point) => point.date === "2026-03-01")
+  if (mar1) {
+    assertClose(mar1.tradingEquityStart, 100000, "March 1 denominator includes C (50000)")
+
+    // B's Feb P&L is not diluted out of existence, and C's March capital is
+    // not silently dropped from the February return.
+    assertClose(aggregate.points.reduce((sum, point) => sum + point.realizedPnl, 0), 5500, "aggregate realized P&L = 4000+500+1000")
+  }
+
+  // Idle-only account (no closed trades yet) with a valid startingDate also
+  // counts toward the denominator from its start date.
+  const idleD = account({ id: "acc-d", name: "D", startingBalance: 10000, startingDate: "2026-01-15" })
+  const withIdle = buildAggregateDailySeries([accA, accB, accC, idleD], allTrades, [])
+  const feb10WithIdle = withIdle.points.find((point) => point.date === "2026-02-10")
+  if (feb10WithIdle) {
+    assertClose(feb10WithIdle.tradingEquityStart, 60000, "idle-only D (10000) joins the Feb 10 denominator")
+    assertClose(feb10WithIdle.returnPct, 4000 / 60000 * 100, "Feb 10 return = 4000/60000 with idle D")
+  }
+}
+
+// ==================================== INCONSISTENT STARTING DATE POLICY
+
+console.log("--- startingDate later than historical trades (inconsistent) ---")
+{
+  // D has startingDate AFTER its first real trade. Effective participation
+  // must start at the first close so the earlier performance is NOT dropped.
+  const accD = account({ id: "acc-d", name: "D", startingBalance: 20000, startingDate: "2026-06-01" })
+  const tradeEarly = trade({ id: "d-may", accountId: "acc-d", date: "2026-05-20", time: "10:00", endDate: "2026-05-20", endTime: "12:00", pnl: -500 })
+
+  const series = buildAccountDailySeries(accD, [tradeEarly], [])
+  assertClose(series.points[0].date === "2026-05-20" ? series.points[0].returnPct : NaN, -500 / 20000 * 100, "D's curve starts at first close (May 20), not startingDate (June 1)")
+
+  const aggregate = buildAggregateDailySeries([accD], [tradeEarly], [])
+  assertClose(aggregate.points[0].realizedPnl, -500, "earlier-than-startingDate P&L is not discarded in the aggregate")
+  assertClose(aggregate.points[0].tradingEquityStart, 20000, "D's capital participates from the first close")
+
+  // Metrics route (same series feeds Sharpe / Sortino / drawdown).
+  const metrics = calculateScopeQuantMetrics({ trades: [tradeEarly], scope: { kind: "selected", accountIds: ["acc-d"] }, accounts: [accD] })
+  assert(metrics.totalTrades === 1, "inconsistent-startingDate account still counts its closed trade")
+  assert(metrics.maxDrawdownAmount !== 0, "drawdown reflects the early realized loss")
+}
+
 // ============================================================ FILTERING
 
 console.log("--- account filtering ---")
@@ -330,6 +401,29 @@ console.log("--- import duplicates ---")
   assert(sigA !== sigB, "duplicate signature differs across accounts")
 }
 
+// Regression: the import dialog assigns accountId BEFORE dedupe. Raw converter
+// output has no accountId, so dedupe on un-stamped trades would never match a
+// stored trade (its signature includes accountId) and re-importing the same
+// file would double-import.
+{
+  const stored = trade({ id: "t1", accountId: "acc-a", ticket: "ORD-100", date: "2026-01-05", time: "10:00", endDate: "2026-01-05", endTime: "15:00" })
+  // Exactly what convertBrokerTradeToTrade/convertFidelityRoundTripToTrade emit:
+  // no accountId yet.
+  const rawIncoming = trade({ accountId: undefined, ticket: "ORD-100", date: "2026-01-05", time: "10:00", endDate: "2026-01-05", endTime: "15:00" })
+
+  const buggy = detectDuplicates([stored], [rawIncoming])
+  assert(buggy.duplicates.length === 0, "un-stamped incoming does not match stored trade (documents the ordering requirement)")
+
+  const stampedIncoming = { ...rawIncoming, accountId: "acc-a" }
+  const fixed = detectDuplicates([stored], [stampedIncoming])
+  assert(fixed.duplicates.length === 1, "stamped incoming same account -> duplicate skipped")
+  assert(fixed.newTrades.length === 0, "stamped incoming same account -> no new trade")
+
+  const stampedOther = { ...rawIncoming, accountId: "acc-b" }
+  const other = detectDuplicates([stored], [stampedOther])
+  assert(other.newTrades.length === 1, "stamped incoming other account -> NOT duplicate")
+}
+
 // ============================================================ SETUP / NOTES / STOPS
 
 console.log("--- setup / manual grade / notes / stops ---")
@@ -340,6 +434,7 @@ console.log("--- setup / manual grade / notes / stops ---")
     accountId: "acc-a",
     setupId: "setup-breakout",
     manualSetupGrade: "A+",
+    manualProcessFollowed: true,
     tradeThesis: "expect continuation after breakout",
     reviewNotes: "clean fill, tight stop",
     stopLoss: 95,

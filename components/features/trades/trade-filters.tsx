@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button"
 import { Search, Filter } from "lucide-react"
 import type { FilterOptions } from "@/types/trade"
+import type { Setup } from "@/types/setup"
 
 interface TradeFiltersProps {
   searchTerm: string
@@ -17,6 +18,7 @@ interface TradeFiltersProps {
     sessions: string[]
     days: string[]
   }
+  setups?: Setup[]
   onShowAdvancedFilters: () => void
 }
 
@@ -26,6 +28,7 @@ export function TradeFilters({
   filters,
   onFiltersChange,
   filterOptions,
+  setups = [],
   onShowAdvancedFilters,
 }: TradeFiltersProps) {
   const handleFilterChange = (key: keyof FilterOptions, value: string) => {
@@ -90,6 +93,61 @@ export function TradeFilters({
           </SelectContent>
         </Select>
 
+        <Select value={filters.setupId || "all"} onValueChange={(value) => handleFilterChange("setupId", value)}>
+          <SelectTrigger>
+            <SelectValue placeholder="Setup" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Setups</SelectItem>
+            {setups.map((setup) => (
+              <SelectItem key={setup.id} value={setup.id}>
+                {setup.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={filters.manualGrade || "all"} onValueChange={(value) => handleFilterChange("manualGrade", value)}>
+          <SelectTrigger>
+            <SelectValue placeholder="Manual Grade" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Grades</SelectItem>
+            {["A+", "A", "B", "C", "D", "F"].map((grade) => (
+              <SelectItem key={grade} value={grade}>
+                {grade}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={filters.processFollowed || "all"}
+          onValueChange={(value) => handleFilterChange("processFollowed", value)}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Process" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Process</SelectItem>
+            <SelectItem value="followed">Followed</SelectItem>
+            <SelectItem value="violated">Violated</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select value={filters.reviewStatus || "all"} onValueChange={(value) => handleFilterChange("reviewStatus", value)}>
+          <SelectTrigger>
+            <SelectValue placeholder="Review Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Reviews</SelectItem>
+            <SelectItem value="reviewed">Reviewed</SelectItem>
+            <SelectItem value="partial">Partial</SelectItem>
+            <SelectItem value="needs-review">Needs Review</SelectItem>
+            <SelectItem value="open">Open</SelectItem>
+          </SelectContent>
+        </Select>
+
         <Button variant="outline" onClick={onShowAdvancedFilters} className="w-full">
           <Filter className="h-4 w-4 mr-2" />
           Advanced
@@ -98,3 +156,4 @@ export function TradeFilters({
     </div>
   )
 }
+

@@ -31,9 +31,12 @@ import {
  * - Aggregate (All Accounts) daily return is CAPITAL-WEIGHTED:
  *   aggregateReturn = totalRealizedPnl / aggregateTradingEquityStart. It is NOT
  *   the simple average of per-account percentage returns.
- * - An account enters the aggregate series on max(startingDate, first close
- *   date) and leaves on its last close date; weekdays with no activity (or no
- *   capital deployed) contribute a 0% return.
+ * - An account enters the aggregate series on its EFFECTIVE PARTICIPATION
+ *   START: a valid explicit `startingDate` even with no trades (idle capital is
+ *   portfolio capital); the first close date only when no valid `startingDate`
+ *   exists; the first close when `startingDate` is later than real history
+ *   (inconsistent data — never drop realized performance). Weekdays with no
+ *   activity contribute a 0% return.
  */
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
@@ -182,11 +185,35 @@ function netAdjustmentsByDay(accountId: string, adjustments: BalanceAdjustment[]
   return map
 }
 
-function participationStart(account: TradingAccount, firstClose: string): string {
-  if (account.startingDate && DATE_KEY_PATTERN.test(account.startingDate) && account.startingDate > firstClose) {
-    return account.startingDate
+/**
+ * Deterministic effective participation start for an account's trading-equity
+ * series.
+ *
+ * Rule (documented, tested):
+ * - If the account has a VALID explicit `startingDate`, its capital participates
+ *   from that date — even on days/months with no trades. Idle capital is still
+ *   portfolio capital, so it must be in the aggregate return denominator.
+ * - If a closed trade exists BEFORE the configured `startingDate`, the data is
+ *   inconsistent (a startingDate later than real history). The effective start
+ *   is pulled back to the first close so no realized performance is dropped.
+ * - If there is no valid `startingDate`, fall back to the first close date.
+ *
+ * `firstClose` is the earliest closed-trade close date (or null when the
+ * account has no closed trades).
+ */
+function participationStart(account: TradingAccount, firstClose: string | null): string | null {
+  const hasStartingDate = Boolean(account.startingDate && DATE_KEY_PATTERN.test(account.startingDate as string))
+  if (hasStartingDate && firstClose !== null) {
+    return firstClose < (account.startingDate as string) ? firstClose : (account.startingDate as string)
+  }
+  if (hasStartingDate) {
+    return account.startingDate as string
   }
   return firstClose
+}
+
+function hasClosedTrades(accountId: string, trades: Trade[]): boolean {
+  return trades.some((trade) => trade.accountId === accountId && isTradeClosed(trade) && DATE_KEY_PATTERN.test(getCloseDateKey(trade)))
 }
 
 /** Daily equity table for a single account. See module docs for conventions. */
@@ -198,8 +225,14 @@ export function buildAccountDailySeries(
   const { pnlByDay, first, last } = buildDayAggregates(account.id, trades, adjustments)
   if (!first || !last) return { points: [], first: null, last: null }
 
+  const start = participationStart(account, first)
+  if (!start) return { points: [], first: null, last: null }
+
   const adjustmentByDay = netAdjustmentsByDay(account.id, adjustments)
-  const days = iterateWeekdays(first, last)
+  // Start the curve at the effective participation start so idle capital
+  // present before the first close still appears in the trading-equity
+  // denominator (it contributes 0% until its first realized trade).
+  const days = iterateWeekdays(start, last)
   const points: DailyEquityPoint[] = []
 
   let cumulativePnl = 0
@@ -227,7 +260,7 @@ export function buildAccountDailySeries(
     cumulativeAdjustments += netAdjustments
   }
 
-  return { points, first, last }
+  return { points, first: start, last }
 }
 
 // ------------------------------------------------- aggregate daily series
@@ -257,8 +290,22 @@ function buildAccountWindows(accounts: TradingAccount[], trades: Trade[], adjust
  *
  * aggregateReturn = totalRealizedPnl / aggregateTradingEquityStart for the day,
  * where aggregateTradingEquityStart sums each participating account's trading
- * equity at the start of that day. An account participates from
- * max(startingDate, first close) through its last close.
+ * equity at the start of that day.
+ *
+ * Participation rules (documented, tested):
+ * - An account with a valid `startingDate` participates from that date even if
+ *   it has no trades yet — idle capital is still portfolio capital and belongs
+ *   in the denominator.
+ * - An account without a valid `startingDate` participates from its first
+ *   close; an account with a `startingDate` later than a historical close
+ *   participates from that close (inconsistent data, never drop history).
+ * - Idle-only accounts (no closed trades) with a valid `startingDate` and a
+ *   finite starting balance contribute flat capital from their start date
+ *   through the aggregate window; without a `startingDate` there is no
+ *   deterministic participation point, so they are excluded rather than
+ *   fabricated.
+ * - The daily-return series is anchored to trading activity (accounts with
+ *   closed trades); a day with no activity anywhere contributes 0%.
  */
 export function buildAggregateDailySeries(
   accounts: TradingAccount[],
@@ -266,7 +313,6 @@ export function buildAggregateDailySeries(
   adjustments: BalanceAdjustment[],
 ): AccountDailySeries {
   const windows = buildAccountWindows(accounts, trades, adjustments)
-  if (windows.length === 0) return { points: [], first: null, last: null }
 
   let globalFirst: string | null = null
   let globalLast: string | null = null
@@ -279,6 +325,15 @@ export function buildAggregateDailySeries(
   }
 
   if (!globalFirst || !globalLast) return { points: [], first: null, last: null }
+
+  // Idle-only accounts (no closed trades anywhere) that have already started.
+  const idleAccounts = accounts.filter(
+    (account) =>
+      !hasClosedTrades(account.id, trades) &&
+      Boolean(account.startingDate && DATE_KEY_PATTERN.test(account.startingDate as string)) &&
+      isFiniteNumber(account.startingBalance),
+  )
+  const idleCumulativeFlow = new Map<string, number>()
 
   const days = iterateWeekdays(globalFirst, globalLast)
   const points: DailyEquityPoint[] = []
@@ -296,6 +351,16 @@ export function buildAggregateDailySeries(
       totalTradingEquity += point.tradingEquityStart
       totalAdjustments += point.netAdjustments
       totalBalanceEnd += point.accountBalanceEnd
+    }
+
+    for (const account of idleAccounts) {
+      if ((account.startingDate as string) > date) continue
+      const flow = netAdjustmentsByDay(account.id, adjustments).get(date) || 0
+      const cumulative = (idleCumulativeFlow.get(account.id) || 0) + flow
+      idleCumulativeFlow.set(account.id, cumulative)
+      totalTradingEquity += account.startingBalance
+      totalAdjustments += flow
+      totalBalanceEnd += account.startingBalance + cumulative
     }
 
     const returnPct = totalTradingEquity > 0 ? (totalPnl / totalTradingEquity) * 100 : 0
@@ -324,10 +389,13 @@ export function aggregateSeriesToDailyReturns(series: AccountDailySeries): Daily
 // ----------------------------------------------------------------- drawdown
 
 /**
- * Drawdown over the merged realizable trading-equity curves of multiple
- * accounts. Each account's curve is `startingBalance + cumulative realized P&L`
- * (no external flows); events are merged in global close-time order and the
- * combined equity is the sum of each account's curve at that time.
+ * Drawdown over the merged trading-equity curves of multiple accounts.
+ * Each account's curve is `startingBalance + cumulative realized P&L` (no
+ * external flows), and its starting capital enters the combined curve at its
+ * EFFECTIVE PARTICIPATION START (see `participationStart`) — so an account
+ * that starts later never dilutes the drawdown of earlier portfolio events.
+ * Events are merged in global close-time order; a participation "start" is
+ * ordered before same-day realized P&L so capital is present before its P&L.
  */
 export function calculateAggregateDrawdown(
   accounts: TradingAccount[],
@@ -335,35 +403,43 @@ export function calculateAggregateDrawdown(
   adjustments: BalanceAdjustment[],
 ): DrawdownResult {
   void adjustments
-  const events: { timestamp: number; accountId: string; pnl: number }[] = []
+  const events: { timestamp: number; kind: "start" | "pnl"; accountId: string; amount: number }[] = []
 
   for (const account of accounts) {
+    let accountFirstClose: string | null = null
     for (const trade of trades) {
       if (!trade || trade.accountId !== account.id || !isTradeClosed(trade)) continue
+      const key = getCloseDateKey(trade)
+      if (!DATE_KEY_PATTERN.test(key)) continue
+      if (accountFirstClose === null || key < accountFirstClose) accountFirstClose = key
       const timestamp = getCloseTimestamp(trade)
       if (timestamp === null) continue
-      events.push({ timestamp, accountId: account.id, pnl: safePnl(trade) })
+      events.push({ timestamp, kind: "pnl", accountId: account.id, amount: safePnl(trade) })
+    }
+    const start = participationStart(account, accountFirstClose)
+    if (start) {
+      const base = isFiniteNumber(account.startingBalance) ? account.startingBalance : 0
+      events.push({
+        timestamp: new Date(`${start}T00:00:00Z`).getTime(),
+        kind: "start",
+        accountId: account.id,
+        amount: base,
+      })
     }
   }
 
-  events.sort((a, b) => a.timestamp - b.timestamp)
+  events.sort((a, b) => a.timestamp - b.timestamp || (a.kind === "start" ? -1 : 1))
 
   const equityByAccount = new Map<string, number>()
   let combined = 0
-  for (const account of accounts) {
-    const base = isFiniteNumber(account.startingBalance) ? account.startingBalance : 0
-    equityByAccount.set(account.id, base)
-    combined += base
-  }
-
-  let peak = combined
+  let peak = 0
   let maxPct: number | null = null
   let maxAmount = 0
-  const anyAccountTraded = events.length > 0
+  const anyAccountTraded = events.some((event) => event.kind === "pnl")
 
   for (const event of events) {
     const previous = equityByAccount.get(event.accountId) || 0
-    const updated = previous + event.pnl
+    const updated = previous + event.amount
     equityByAccount.set(event.accountId, updated)
     combined = combined - previous + updated
 

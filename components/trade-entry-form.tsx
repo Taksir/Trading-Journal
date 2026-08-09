@@ -94,6 +94,8 @@ export function TradeEntryForm({ onSubmit, onCancel, initialData, settings, acco
     manualSetupGrade: initialData?.manualSetupGrade || "",
     tradeThesis: initialData?.tradeThesis || "",
     reviewNotes: initialData?.reviewNotes || "",
+    manualProcessFollowed: initialData?.manualProcessFollowed,
+    manualMistakeIds: initialData?.manualMistakeIds,
   } as Omit<Trade, "id">)
 
   const [hasClose, setHasClose] = useState(initialData?.endDate ? true : false)

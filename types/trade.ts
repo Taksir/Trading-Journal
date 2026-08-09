@@ -46,6 +46,10 @@ export interface Trade {
   tradeThesis?: string
   /** Post-trade observations. */
   reviewNotes?: string
+  /** Whether I followed my trading process. `true`/`false`; absent = not yet reviewed. */
+  manualProcessFollowed?: boolean
+  /** Stable mistake ids made on this trade (see types/review.ts MISTAKE_IDS). Multiple allowed. */
+  manualMistakeIds?: string[]
 
   // ---- Stop tracking ----
   /** Manually specified stop price. Mirrors `stopLoss` when a stop is known. */
@@ -102,6 +106,10 @@ export interface FilterOptions {
   maxR?: number // New: Maximum R-multiple filter
   minPnL?: number // New: Minimum P&L filter
   maxPnL?: number // New: Maximum P&L filter
+  setupId?: string // Review: filter by setup id
+  manualGrade?: string // Review: filter by manual setup grade
+  processFollowed?: "followed" | "violated" // Review: filter by process review
+  reviewStatus?: "reviewed" | "partial" | "needs-review" | "open" // Review: filter by review status
 }
 
 export interface TradingSession {
